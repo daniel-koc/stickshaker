@@ -1,0 +1,29 @@
+{
+  "name": "stickshaker",
+  "version": "0.1.0",
+  "description": "A systems-grade browser-agent runtime.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "bin": {
+    "stickshaker": "dist/cli.js"
+  },
+  "scripts": {
+    "stickshaker": "tsx src/cli.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.0",
+    "commander": "^14.0.0",
+    "playwright": "^1.56.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

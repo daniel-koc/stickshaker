@@ -1,5 +1,4 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import type { Snapshot } from "./types.js";
 
 /**
  * The agent's tool surface. Deliberately small and typed — clear names,
@@ -90,31 +89,3 @@ export const tools: Anthropic.Tool[] = [
     },
   },
 ];
-
-/** Render a snapshot into the compact text block the model reads each turn. */
-export function formatSnapshot(s: Snapshot): string {
-  const lines: string[] = [];
-  lines.push(`URL: ${s.url}`);
-  lines.push(`Title: ${s.title}`);
-  lines.push("");
-  lines.push("Interactive elements — act on these with click / type / select_option using the [ref]:");
-  if (s.elements.length === 0) {
-    lines.push("  (none found)");
-  } else {
-    for (const e of s.elements) {
-      const parts = [`[${e.ref}]`, e.type ? `${e.tag}:${e.type}` : e.tag];
-      if (e.role) parts.push(`role=${e.role}`);
-      if (e.name) parts.push(JSON.stringify(e.name));
-      if (e.value) parts.push(`value=${JSON.stringify(e.value)}`);
-      lines.push("  " + parts.join(" "));
-    }
-    if (s.elementsTruncated) {
-      lines.push(`  … element list truncated at ${s.elements.length}; scroll to reach the rest.`);
-    }
-  }
-  lines.push("");
-  lines.push("Visible page text:");
-  lines.push(s.text || "(no visible text)");
-  if (s.textTruncated) lines.push("… page text truncated.");
-  return lines.join("\n");
-}

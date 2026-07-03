@@ -38,3 +38,17 @@ export interface Usage {
   cacheReadTokens: number;
   cacheCreationTokens: number;
 }
+
+/** How the agent presents page state to the model. */
+export type RunMode = "full" | "diff";
+
+/** Per-step record for telemetry and the benchmark. */
+export interface StepTelemetry {
+  step: number;
+  kind: "full" | "diff";
+  /** Input tokens for the API call that chose this step's action. */
+  inputTokens: number;
+  outputTokens: number;
+  /** Size of the observation appended after this step, in characters. */
+  observationChars: number;
+}

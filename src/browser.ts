@@ -34,7 +34,11 @@ export class BrowserSession {
     // calls to preserve function names; those helpers don't exist in the page, so
     // define a no-op shim. Harmless after a `tsc` build, required under tsx.
     await s.context.addInitScript(() => {
-      (globalThis as unknown as { __name?: (fn: unknown) => unknown }).__name ??= (fn) => fn;
+      const g = globalThis as unknown as { __name?: (fn: unknown) => unknown; __skNextRef?: number };
+      g.__name ??= (fn) => fn;
+      // Monotonic ref counter, per document. Resets on navigation (fresh window),
+      // which is exactly where the agent forces a keyframe.
+      g.__skNextRef ??= 0;
     });
     s.page = await s.context.newPage();
     return s;
@@ -61,9 +65,11 @@ export class BrowserSession {
   async snapshot(): Promise<Snapshot> {
     const raw = await this.page.evaluate(
       ({ maxElements, maxText }) => {
-        document
-          .querySelectorAll("[data-sk-ref]")
-          .forEach((el) => el.removeAttribute("data-sk-ref"));
+        // Stable refs: keep any ref already on a node; only new nodes get a new
+        // number. So the same element carries the same [ref] across turns, which
+        // is what lets successive snapshots be diffed by ref.
+        const counter = globalThis as unknown as { __skNextRef?: number };
+        if (typeof counter.__skNextRef !== "number") counter.__skNextRef = 0;
 
         const isVisible = (el: Element): boolean => {
           const rect = el.getBoundingClientRect();
@@ -101,7 +107,6 @@ export class BrowserSession {
 
         const elements: Array<Record<string, unknown>> = [];
         let elementsTruncated = false;
-        let ref = 0;
 
         for (const el of Array.from(document.querySelectorAll(interactiveSelector))) {
           if (!isVisible(el)) continue;
@@ -109,7 +114,12 @@ export class BrowserSession {
             elementsTruncated = true;
             break;
           }
-          el.setAttribute("data-sk-ref", String(ref));
+          let refAttr = el.getAttribute("data-sk-ref");
+          if (refAttr === null) {
+            refAttr = String(counter.__skNextRef!++);
+            el.setAttribute("data-sk-ref", refAttr);
+          }
+          const ref = Number(refAttr);
           const tag = el.tagName.toLowerCase();
           const info: Record<string, unknown> = { ref, tag, name: accessibleName(el).slice(0, 120) };
 
@@ -126,7 +136,6 @@ export class BrowserSession {
             if (value) info.value = value.slice(0, 80);
           }
           elements.push(info);
-          ref++;
         }
 
         const fullText = ((document.body?.innerText ?? "") as string)

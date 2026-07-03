@@ -1,16 +1,20 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { BrowserSession } from "./browser.js";
-import { tools, formatSnapshot } from "./tools.js";
+import { tools } from "./tools.js";
+import { formatFull, formatDiff, diffSnapshots } from "./observe.js";
 import { costUsd } from "./llm.js";
-import type { ActionResult, Usage } from "./types.js";
+import type { ActionResult, RunMode, Snapshot, StepTelemetry, Usage } from "./types.js";
+
+const ELIDED = "[Earlier observation elided to save context — act on the most recent snapshot below.]";
 
 const SYSTEM = `You are Stickshaker, an agent that operates a real Chromium browser to accomplish a user's task.
 
-Each turn you receive a snapshot of the current page: a numbered list of interactive elements (each with a [ref]) and the visible page text. Make ONE tool call to move toward the goal.
+Each turn you receive the page state and make ONE tool call. The state comes in two forms:
+- A full snapshot: every visible interactive element (each with a [ref]) plus the visible page text.
+- A delta: only the elements that were added, changed, or removed since the previous snapshot. Elements not listed are still on the page and keep their [ref]. "Visible page text: unchanged" means the text is the same as the previous snapshot.
 
 Rules:
-- A [ref] is valid only for the CURRENT snapshot. After every action you get a fresh snapshot with new refs.
-- Act on an element by passing its ref number to click / type / select_option.
+- Act on an element by passing its [ref] to click / type / select_option. A [ref] stays valid as long as that element remains on the page.
 - Read the visible page text to find the information the task asks for.
 - When the task is complete, call "done" with the answer or a summary. If it is genuinely impossible, call "fail" with the reason.
 - Be decisive and take the most direct path. Do not narrate your steps.`;
@@ -21,6 +25,10 @@ export interface AgentOptions {
   model: string;
   maxSteps: number;
   headless: boolean;
+  /** "diff" (default): keyframes + deltas + history elision. "full": the naive baseline. */
+  mode: RunMode;
+  /** In diff mode, force a full snapshot every N steps to bound drift. */
+  keyframeInterval: number;
   onStep?: (line: string) => void;
 }
 
@@ -28,23 +36,48 @@ export interface AgentResult {
   status: "done" | "failed" | "max_steps";
   message: string;
   steps: number;
+  mode: RunMode;
   usage: Usage;
   costUsd: number;
+  telemetry: StepTelemetry[];
 }
 
 export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const client = new Anthropic();
   const browser = await BrowserSession.launch({ headless: opts.headless });
   const usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+  const telemetry: StepTelemetry[] = [];
   const log = opts.onStep ?? (() => {});
+  const messages: Anthropic.MessageParam[] = [];
+
+  // Observation registry: each page observation records the keyframe group it
+  // belongs to and how to elide its body in place. In diff mode we keep only the
+  // most recent keyframe group live; older groups are collapsed to a placeholder,
+  // which keeps per-call context flat instead of O(steps^2).
+  const observations: { group: number; elide: () => void }[] = [];
+  let keyframeGroup = 0;
 
   const finish = (status: AgentResult["status"], message: string, steps: number): AgentResult => ({
     status,
     message,
     steps,
+    mode: opts.mode,
     usage,
     costUsd: costUsd(opts.model, usage),
+    telemetry,
   });
+
+  const addObservation = (body: string, toolUseId: string | null, isError: boolean): void => {
+    if (toolUseId === null) {
+      const msg: Anthropic.MessageParam = { role: "user", content: body };
+      messages.push(msg);
+      observations.push({ group: keyframeGroup, elide: () => { msg.content = ELIDED; } });
+    } else {
+      const block: Anthropic.ToolResultBlockParam = { type: "tool_result", tool_use_id: toolUseId, content: body, is_error: isError };
+      messages.push({ role: "user", content: [block] });
+      observations.push({ group: keyframeGroup, elide: () => { block.content = ELIDED; } });
+    }
+  };
 
   try {
     if (opts.startUrl) {
@@ -53,14 +86,23 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       if (!nav.ok) return finish("failed", `Could not open the starting URL: ${nav.detail}`, 0);
     }
 
-    const messages: Anthropic.MessageParam[] = [];
-    let snapshot = await browser.snapshot();
-    messages.push({
-      role: "user",
-      content: `Task: ${opts.task}\n\nCurrent page snapshot:\n${formatSnapshot(snapshot)}`,
-    });
+    // The task lives in its own message and is never elided.
+    messages.push({ role: "user", content: `Task: ${opts.task}` });
+
+    let cur = await browser.snapshot();
+    let prev: Snapshot = cur;
+    let prevUrl = cur.url;
+    let stepsSinceKeyframe = 0;
+
+    // The first observation is always a full keyframe.
+    keyframeGroup++;
+    addObservation(`Current page (full snapshot):\n${formatFull(cur)}`, null, false);
 
     for (let step = 1; step <= opts.maxSteps; step++) {
+      if (opts.mode === "diff") {
+        for (const o of observations) if (o.group < keyframeGroup) o.elide();
+      }
+
       const resp = await client.messages.create({
         model: opts.model,
         max_tokens: 4096,
@@ -77,32 +119,58 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
       messages.push({ role: "assistant", content: resp.content });
 
-      const toolUse = resp.content.find(
-        (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
-      );
-      const textBlock = resp.content.find(
-        (b): b is Anthropic.TextBlock => b.type === "text",
-      );
+      const toolUse = resp.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+      const textBlock = resp.content.find((b): b is Anthropic.TextBlock => b.type === "text");
 
       if (!toolUse) {
-        // Model ended its turn without acting — take any text as the final answer.
         log("stop (no tool call)");
         return finish("done", textBlock?.text?.trim() || "(agent stopped without an answer)", step);
       }
 
       const input = toolUse.input as Record<string, unknown>;
-      log(`step ${step}: ${toolUse.name}${summarizeInput(toolUse.name, input)}`);
 
-      if (toolUse.name === "done") return finish("done", String(input.answer ?? ""), step);
-      if (toolUse.name === "fail") return finish("failed", String(input.reason ?? ""), step);
+      if (toolUse.name === "done") {
+        log(`step ${step}: done`);
+        return finish("done", String(input.answer ?? ""), step);
+      }
+      if (toolUse.name === "fail") {
+        log(`step ${step}: fail`);
+        return finish("failed", String(input.reason ?? ""), step);
+      }
 
       const result = await execAction(browser, toolUse.name, input);
-      snapshot = await browser.snapshot();
-      const body = `${result.ok ? "OK" : "ERROR"}: ${result.detail}\n\nCurrent page snapshot:\n${formatSnapshot(snapshot)}`;
-      messages.push({
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: toolUse.id, content: body, is_error: !result.ok }],
+      cur = await browser.snapshot();
+
+      const navigated = cur.url !== prevUrl;
+      stepsSinceKeyframe++;
+      const isKeyframe = opts.mode === "full" || navigated || stepsSinceKeyframe >= opts.keyframeInterval;
+
+      let observation: string;
+      let kind: "full" | "diff";
+      if (isKeyframe) {
+        if (opts.mode === "diff") keyframeGroup++;
+        observation = `Current page (full snapshot):\n${formatFull(cur)}`;
+        kind = "full";
+        stepsSinceKeyframe = 0;
+      } else {
+        observation = `Result of the last action, then what changed:\n${formatDiff(diffSnapshots(prev, cur))}`;
+        kind = "diff";
+      }
+
+      const body = `${result.ok ? "OK" : "ERROR"}: ${result.detail}\n\n${observation}`;
+      addObservation(body, toolUse.id, !result.ok);
+
+      log(`step ${step}: ${toolUse.name}${summarizeInput(toolUse.name, input)}   [${kind}, ${body.length} chars]`);
+      telemetry.push({
+        step,
+        kind,
+        inputTokens: resp.usage.input_tokens,
+        outputTokens: resp.usage.output_tokens,
+        observationChars: body.length,
       });
+
+      prev = cur;
+      prevUrl = cur.url;
     }
 
     return finish("max_steps", `Reached the ${opts.maxSteps}-step limit without finishing.`, opts.maxSteps);

@@ -1,14 +1,33 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { BrowserSession } from "./browser.js";
-import { formatSnapshot } from "./tools.js";
-import { runAgent } from "./agent.js";
+import { formatFull } from "./observe.js";
+import { runAgent, type AgentResult } from "./agent.js";
+import type { RunMode } from "./types.js";
 
 // Load a local .env if present (Node >= 20.6). No dependency needed.
 try {
   (process as unknown as { loadEnvFile?: () => void }).loadEnvFile?.();
 } catch {
   // No .env file — rely on the ambient environment.
+}
+
+function requireKey(): void {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error("ERROR: ANTHROPIC_API_KEY is not set. Put it in a .env file or your environment.");
+    process.exit(1);
+  }
+}
+
+function parsePositiveInt(value: string): number {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n <= 0) throw new InvalidArgumentError("expected a positive integer");
+  return n;
+}
+
+function parseMode(value: string): RunMode {
+  if (value !== "full" && value !== "diff") throw new InvalidArgumentError("mode must be 'full' or 'diff'");
+  return value;
 }
 
 const program = new Command();
@@ -23,19 +42,27 @@ program
   .argument("<task>", "the task, in natural language")
   .option("--url <url>", "starting URL")
   .option("--model <model>", "Claude model id", "claude-opus-4-8")
-  .option("--max-steps <n>", "maximum agent steps", (v) => parseInt(v, 10), 25)
+  .option("--mode <mode>", "observation mode: diff (incremental) or full (baseline)", parseMode, "diff")
+  .option("--max-steps <n>", "maximum agent steps", parsePositiveInt, 25)
+  .option("--keyframe-interval <n>", "diff mode: force a full snapshot every N steps", parsePositiveInt, 5)
   .option("--headed", "show the browser window instead of running headless", false)
-  .action(async (task: string, opts: { url?: string; model: string; maxSteps: number; headed: boolean }) => {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      console.error("ERROR: ANTHROPIC_API_KEY is not set. Put it in a .env file or your environment.");
-      process.exit(1);
-    }
-    console.error(`▶ task: ${task}`);
+  .action(async (task: string, opts: {
+    url?: string;
+    model: string;
+    mode: RunMode;
+    maxSteps: number;
+    keyframeInterval: number;
+    headed: boolean;
+  }) => {
+    requireKey();
+    console.error(`▶ task: ${task}   [mode: ${opts.mode}, model: ${opts.model}]`);
     const result = await runAgent({
       task,
       startUrl: opts.url,
       model: opts.model,
+      mode: opts.mode,
       maxSteps: opts.maxSteps,
+      keyframeInterval: opts.keyframeInterval,
       headless: !opts.headed,
       onStep: (line) => console.error("  " + line),
     });
@@ -52,6 +79,55 @@ program
   });
 
 program
+  .command("bench")
+  .description("Run a task in both full-snapshot and diff mode and compare input-token cost.")
+  .argument("<task>", "the task, in natural language")
+  .requiredOption("--url <url>", "starting URL")
+  .option("--model <model>", "Claude model id", "claude-opus-4-8")
+  .option("--max-steps <n>", "maximum agent steps", parsePositiveInt, 20)
+  .option("--keyframe-interval <n>", "diff mode: force a full snapshot every N steps", parsePositiveInt, 5)
+  .action(async (task: string, opts: {
+    url: string;
+    model: string;
+    maxSteps: number;
+    keyframeInterval: number;
+  }) => {
+    requireKey();
+    const results: AgentResult[] = [];
+    for (const mode of ["full", "diff"] as const) {
+      console.error(`\n▶ [${mode}] ${task}`);
+      results.push(
+        await runAgent({
+          task,
+          startUrl: opts.url,
+          model: opts.model,
+          mode,
+          maxSteps: opts.maxSteps,
+          keyframeInterval: opts.keyframeInterval,
+          headless: true,
+          onStep: (line) => console.error("  " + line),
+        }),
+      );
+    }
+    const [full, diff] = results as [AgentResult, AgentResult];
+
+    const row = (r: AgentResult) =>
+      `${r.mode.padEnd(5)} ${String(r.steps).padStart(5)} ${String(r.usage.inputTokens).padStart(11)} ${String(r.usage.outputTokens).padStart(11)} ${("$" + r.costUsd.toFixed(4)).padStart(9)}  ${r.status}`;
+
+    console.log("");
+    console.log(`model: ${opts.model}   task: ${task}`);
+    console.log("mode   steps   input-tok   output-tok      cost  status");
+    console.log(row(full));
+    console.log(row(diff));
+    if (full.usage.inputTokens > 0) {
+      const reduction = (1 - diff.usage.inputTokens / full.usage.inputTokens) * 100;
+      const costReduction = full.costUsd > 0 ? (1 - diff.costUsd / full.costUsd) * 100 : 0;
+      console.log("");
+      console.log(`diff vs full: ${reduction.toFixed(1)}% fewer input tokens, ${costReduction.toFixed(1)}% lower cost.`);
+    }
+  });
+
+program
   .command("snapshot")
   .description("Launch the browser, snapshot a page, and print the element list. No API key needed.")
   .requiredOption("--url <url>", "URL to snapshot")
@@ -64,7 +140,7 @@ program
         console.error(nav.detail);
         process.exit(1);
       }
-      console.log(formatSnapshot(await browser.snapshot()));
+      console.log(formatFull(await browser.snapshot()));
     } finally {
       await browser.close();
     }

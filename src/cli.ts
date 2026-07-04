@@ -8,6 +8,7 @@ import { generateReport } from "./view.js";
 import { resumeRun } from "./resume.js";
 import { loadPolicy } from "./guardrails.js";
 import { startStdioServer } from "./mcp.js";
+import type { RouterMode } from "./router.js";
 import type { RunMode } from "./types.js";
 
 // Load a local .env if present (Node >= 20.6). No dependency needed.
@@ -32,6 +33,13 @@ function parsePositiveInt(value: string): number {
 
 function parseMode(value: string): RunMode {
   if (value !== "full" && value !== "diff") throw new InvalidArgumentError("mode must be 'full' or 'diff'");
+  return value;
+}
+
+function parseRouter(value: string): RouterMode {
+  if (value !== "cloud" && value !== "local" && value !== "hybrid") {
+    throw new InvalidArgumentError("router must be 'cloud', 'local', or 'hybrid'");
+  }
   return value;
 }
 
@@ -68,6 +76,10 @@ function reportSummary(result: AgentResult): void {
   console.error(
     `● tokens: in ${result.usage.inputTokens} / out ${result.usage.outputTokens}   ≈ $${result.costUsd.toFixed(4)}`,
   );
+  if (result.routing) {
+    const r = result.routing;
+    console.error(`● routing: ${r.mode} — ${r.localSteps} local / ${r.cloudSteps} cloud steps (cost above is cloud only)`);
+  }
   if (result.runDir) {
     const report = generateReport(result.runDir);
     console.error(`● trace: ${result.runDir}`);
@@ -91,6 +103,9 @@ program
   .option("--mode <mode>", "observation mode: diff (incremental) or full (baseline)", parseMode, "diff")
   .option("--max-steps <n>", "maximum agent steps", parsePositiveInt, 25)
   .option("--keyframe-interval <n>", "diff mode: force a full snapshot every N steps", parsePositiveInt, 5)
+  .option("--router <mode>", "model routing: cloud | local | hybrid", parseRouter, "cloud")
+  .option("--local-model <name>", "Ollama model for local/hybrid routing", "llama3.2")
+  .option("--ollama-url <url>", "Ollama base URL", "http://localhost:11434")
   .option("--policy <file>", "guardrail policy YAML file")
   .option("--approve <mode>", "how to handle actions needing approval: auto | prompt | deny", parseApproveMode, "prompt")
   .option("--trace-dir <dir>", "directory for run traces", ".stickshaker/traces")
@@ -102,14 +117,17 @@ program
     mode: RunMode;
     maxSteps: number;
     keyframeInterval: number;
+    router: RouterMode;
+    localModel: string;
+    ollamaUrl: string;
     policy?: string;
     approve: ApproveMode;
     traceDir: string;
     trace: boolean;
     headed: boolean;
   }) => {
-    requireKey();
-    console.error(`▶ task: ${task}   [mode: ${opts.mode}, model: ${opts.model}${opts.policy ? ", policy: " + opts.policy : ""}]`);
+    if (opts.router !== "local") requireKey();
+    console.error(`▶ task: ${task}   [mode: ${opts.mode}, router: ${opts.router}, model: ${opts.model}${opts.policy ? ", policy: " + opts.policy : ""}]`);
     const result = await runAgent({
       task,
       startUrl: opts.url,
@@ -117,6 +135,9 @@ program
       mode: opts.mode,
       maxSteps: opts.maxSteps,
       keyframeInterval: opts.keyframeInterval,
+      router: opts.router,
+      localModel: opts.localModel,
+      ollamaUrl: opts.ollamaUrl,
       headless: !opts.headed,
       traceDir: opts.trace ? opts.traceDir : undefined,
       ...(opts.policy ? { policy: loadPolicy(opts.policy) } : {}),
@@ -165,10 +186,14 @@ program
   .description("Start the Stickshaker MCP server on stdio (for Claude Desktop / Claude Code).")
   .option("--policy <file>", "guardrail policy YAML file applied to all tool actions")
   .option("--trace-dir <dir>", "directory for browse_task traces", ".stickshaker/traces")
-  .action(async (opts: { policy?: string; traceDir: string }) => {
+  .option("--ollama-url <url>", "Ollama base URL for recall embeddings", "http://localhost:11434")
+  .option("--embed-model <name>", "Ollama embedding model for recall", "nomic-embed-text")
+  .action(async (opts: { policy?: string; traceDir: string; ollamaUrl: string; embedModel: string }) => {
     await startStdioServer({
       ...(opts.policy ? { policy: loadPolicy(opts.policy) } : {}),
       traceDir: opts.traceDir,
+      ollamaUrl: opts.ollamaUrl,
+      embedModel: opts.embedModel,
     });
     // Stays alive on stdin; the transport keeps the event loop running.
   });

@@ -9,16 +9,16 @@ server** that gives any MCP-enabled client (Claude Code, Claude Desktop,
 Cursor, …) a policy-guarded browser via the
 [Model Context Protocol](https://modelcontextprotocol.io).
 
-> **Status: MCP server + guardrails.** On top of the earlier layers (CLI +
-> Playwright loop + Claude tool-use agent + incremental snapshot **diffing** +
-> replayable **flight-recorder** traces), Stickshaker is now an authored **MCP
-> server** that a Claude client can drive, and every action passes through a
-> declarative **guardrail** engine — domain allow/deny, origin scoping,
-> human-in-the-loop approval, and step/cost budgets — enforced in code the
-> model cannot talk its way past. Page text is provenance-labeled as untrusted,
-> the first line of prompt-injection defense. Still ahead: local-model routing,
-> multi-agent orchestration, adversarial injection evals, and the full
-> benchmark matrix.
+> **Status: local-first routing + page memory.** On top of the earlier layers
+> (CLI + Playwright loop + Claude tool-use agent + snapshot **diffing** +
+> **flight-recorder** traces + **MCP server** + **guardrails**), Stickshaker
+> can now route each step to a **local model** via Ollama and escalate hard
+> steps to Claude by confidence (`--router hybrid`), so cheap steps run for
+> free and only the ones that need it cost cloud tokens. The MCP `recall` tool
+> is now backed by **vector page memory** (Ollama embeddings when available, a
+> dependency-free local embedder otherwise). Still ahead: multi-agent
+> orchestration, WebMCP-hybrid actuation, adversarial injection evals, and the
+> full benchmark matrix.
 
 ---
 
@@ -39,6 +39,9 @@ those is a systems mistake, and each has a systems fix here:
 - **Replayable traces beat verbose logs.** Every run is an append-only JSONL
   trace + a screenshot per step + OpenTelemetry spans, baked into a single
   offline HTML report. Interrupted runs are detectable and resumable.
+- **Cost is a dial, not a constant.** Hybrid routing runs cheap steps on a
+  local Ollama model, escalating to Claude only when it has to, so easy steps
+  are free and only the hard ones cost cloud tokens.
 
 ---
 
@@ -46,7 +49,7 @@ those is a systems mistake, and each has a systems fix here:
 
 | Command | What it does |
 |---------|--------------|
-| `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails. |
+| `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
@@ -65,7 +68,7 @@ Every run prints per-run **token and cost** accounting at the end.
 | `browse_task(task, url?, mode?, max_steps?)` | Run the autonomous agent on a natural-language task and return its answer. Self-contained: opens its own browser, records a trace, closes. |
 | `snapshot(url?)` | Interactive elements (each with a `[ref]`) + visible text of the shared session's current page; optionally navigate first. |
 | `act(tool, ref?, …)` | One action in the shared session — `navigate`, `click`, `type`, `select_option`, `scroll`, or `go_back` — then the resulting snapshot. |
-| `recall(query)` | Keyword-search the text of pages visited in this session. |
+| `recall(query)` | Vector-search the text of pages visited in this session. |
 | `get_trace(run_dir)` | Read a recorded run's trace summary (confined to the trace directory). |
 
 `snapshot`, `act`, and `recall` share one browser session per server,
@@ -73,8 +76,9 @@ launched lazily on first use; `browse_task` always opens (and closes) its
 own. The same guardrail policy applies to every tool call — pass
 `--policy <file>` to `stickshaker mcp`; actions the policy marks as needing
 approval are refused, since there is no operator prompt over MCP. Other
-server flags: `--trace-dir` (default `.stickshaker/traces`, relative to the server's
-working directory — see [Quick Start](#3-the-launch-command)).
+server flags: `--trace-dir` (default `.stickshaker/traces`, relative to the
+server's working directory — see [Quick Start](#3-the-launch-command)),
+`--ollama-url` and `--embed-model` for `recall` embeddings.
 
 ---
 
@@ -355,6 +359,11 @@ pnpm stickshaker run "Find the contact email" --url https://example.com \
 pnpm stickshaker run "Read the docs and summarize" --url https://example.com \
   --policy stickshaker.policy.example.yaml --approve prompt
 
+# Local-first routing (needs Ollama with a tool-capable model pulled)
+pnpm stickshaker run "Fill the form with 'hello' and submit" \
+  --url https://www.selenium.dev/selenium/web/web-form.html \
+  --router hybrid --local-model llama3.2
+
 # Replay a run offline; resume an interrupted one
 pnpm stickshaker view .stickshaker/traces/<run-dir>
 pnpm stickshaker resume .stickshaker/traces/<run-dir>
@@ -440,6 +449,32 @@ budgets: { maxSteps: 30, maxCostUsd: 1.00 }
 stickshaker run "Read the docs and summarize" --url https://example.com --policy stickshaker.policy.example.yaml --approve prompt
 ```
 
+## Model routing (local-first)
+
+`--router` picks where each step's decision is made:
+
+| Mode | Behavior |
+|---|---|
+| `cloud` (default) | Every step uses Claude. |
+| `hybrid` | Local-first: the local model proposes the action; if it produces a usable tool call it's used (free), otherwise the step escalates to Claude. A failed local action also escalates the retry. |
+| `local` | Local-only, but still escalates to Claude when the local model can't produce a valid action; fails fast if Ollama is unreachable. |
+
+```bash
+# needs Ollama running with a tool-capable model pulled (e.g. `ollama pull llama3.2`)
+stickshaker run "…task…" --url https://example.com --router hybrid --local-model llama3.2
+```
+
+The run summary prints the split (`routing: hybrid — N local / M cloud steps`);
+**cost accrues only on cloud steps**, so hybrid is measurably cheaper than
+cloud-only on tasks the local model can partly handle. If Ollama isn't running,
+`hybrid` transparently falls back to all-cloud (with a warning) — nothing
+breaks. Local calls go through Ollama's OpenAI-compatible endpoint;
+Stickshaker's Anthropic tools and conversation are converted on the fly.
+
+**Page memory:** the MCP `recall` tool embeds visited-page text and answers by
+vector similarity — Ollama embeddings (`nomic-embed-text`) when available, else
+a dependency-free local hashing embedder, over an in-process cosine index.
+
 ---
 
 ## Benchmarks
@@ -450,6 +485,7 @@ Every claim reproduces with one command — see
 | Claim | Measured |
 |-------|----------|
 | Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
+| Hybrid routing (single form task) | **~68% lower cloud cost**, same outcome |
 
 ---
 
@@ -470,10 +506,13 @@ place):
 | File | Role |
 |---|---|
 | `src/cli.ts` | Command-line entry (`run`, `mcp`, `resume`, `view`, `bench`, `snapshot`) |
-| `src/agent.ts` | The agent loop: tool-use loop, keyframe/delta decisions, history elision, failure recovery, recording |
+| `src/agent.ts` | The agent loop: routing, keyframe/delta decisions, history elision, guardrails, failure recovery, recording |
 | `src/browser.ts` | Playwright wrapper: launch, stable-ref snapshot, actions |
 | `src/observe.ts` | Snapshot diffing, observation rendering, provenance labeling |
 | `src/guardrails.ts` | Declarative policy engine (domains, origin scoping, budgets) |
+| `src/router.ts` | Per-step model routing (cloud / local / hybrid) with escalation |
+| `src/ollama.ts` | Local-model client (Ollama, OpenAI-compatible) + message/tool conversion |
+| `src/memory.ts` | Vector page memory: pluggable embeddings + cosine store |
 | `src/mcp.ts` | MCP server exposing the runtime as tools |
 | `src/recorder.ts` | Flight recorder: JSONL trace, screenshots, `run.json` checkpoint |
 | `src/telemetry.ts` | OpenTelemetry spans exported to a JSONL file |

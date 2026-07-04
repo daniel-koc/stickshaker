@@ -7,7 +7,12 @@ import { costUsd } from "./llm.js";
 import { Recorder, runDirName, type RunMeta } from "./recorder.js";
 import { initTelemetry, trace, context, SpanStatusCode, type Span } from "./telemetry.js";
 import { evaluateAction, isGuardedTool, EMPTY_POLICY, type Policy } from "./guardrails.js";
+import { Router, type RouterMode } from "./router.js";
+import { ollamaAvailable } from "./ollama.js";
 import type { ActionResult, RunMode, Snapshot, StepTelemetry, Usage } from "./types.js";
+
+const DEFAULT_LOCAL_MODEL = "llama3.2";
+const DEFAULT_OLLAMA_URL = "http://localhost:11434";
 
 const ELIDED = "[Earlier observation elided to save context — act on the most recent snapshot below.]";
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -45,6 +50,10 @@ export interface AgentOptions {
   policy?: Policy | undefined;
   /** Human-in-the-loop gate for actions the policy flags for approval. */
   approve?: ApproveFn | undefined;
+  /** Model routing: "cloud" (Claude only), "local" (Ollama only), "hybrid" (local-first). */
+  router?: RouterMode | undefined;
+  localModel?: string | undefined;
+  ollamaUrl?: string | undefined;
   onStep?: (line: string) => void;
 }
 
@@ -64,10 +73,14 @@ export interface AgentResult {
   costUsd: number;
   telemetry: StepTelemetry[];
   runDir?: string;
+  /** Present when router is not "cloud": how steps split across backends. */
+  routing?: { mode: RouterMode; cloudSteps: number; localSteps: number; localInputTokens: number; localOutputTokens: number };
 }
 
 export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
-  const client = new Anthropic();
+  // Tolerant construction so pure-local routing can run without a key; the key is
+  // only actually needed when a cloud step (or escalation) is made.
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? "local-only-placeholder" });
   const browser = await BrowserSession.launch({ headless: opts.headless });
   const usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
   const telemetry: StepTelemetry[] = [];
@@ -91,6 +104,24 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   });
   const rootCtx = rootSpan ? trace.setSpan(context.active(), rootSpan) : undefined;
 
+  const routerMode: RouterMode = opts.router ?? "cloud";
+  const ollamaUrl = opts.ollamaUrl ?? DEFAULT_OLLAMA_URL;
+  const router = new Router({
+    mode: routerMode,
+    client,
+    model: opts.model,
+    localModel: opts.localModel ?? DEFAULT_LOCAL_MODEL,
+    ollamaUrl,
+    tools,
+    system: SYSTEM,
+    maxTokens: 4096,
+  });
+  let cloudSteps = 0;
+  let localSteps = 0;
+  let localInputTokens = 0;
+  let localOutputTokens = 0;
+  let escalateNext = false;
+
   const observations: { group: number; elide: () => void }[] = [];
   let keyframeGroup = 0;
   let result: AgentResult | undefined;
@@ -105,6 +136,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       costUsd: costUsd(opts.model, usage),
       telemetry,
       ...(runDir ? { runDir } : {}),
+      ...(routerMode !== "cloud"
+        ? { routing: { mode: routerMode, cloudSteps, localSteps, localInputTokens, localOutputTokens } }
+        : {}),
     };
     return result;
   };
@@ -137,6 +171,14 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       if (!nav.ok) return ret("failed", `Could not open the starting URL: ${nav.detail}`, 0);
     }
 
+    if (routerMode !== "cloud") {
+      const up = await ollamaAvailable(ollamaUrl);
+      if (!up && routerMode === "local") {
+        return ret("failed", `Ollama is not reachable at ${ollamaUrl}. Start it (\`ollama serve\`) and pull the model, or use --router cloud.`, 0);
+      }
+      if (!up) log(`local model unavailable at ${ollamaUrl} — hybrid will fall back to Claude for every step`);
+    }
+
     const seed = opts.priorContext
       ? `Task: ${opts.task}\n\n${opts.priorContext}`
       : `Task: ${opts.task}`;
@@ -163,38 +205,50 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
       const stepSpan: Span | undefined = tel?.tracer.startSpan("stickshaker.step", { attributes: { "stickshaker.step": step } }, rootCtx);
       const t0 = Date.now();
-      const resp = await client.messages.create({
-        model: opts.model,
-        max_tokens: 4096,
-        system: SYSTEM,
-        tools,
-        tool_choice: { type: "auto", disable_parallel_tool_use: true },
-        messages,
-      });
+      const decision = await router.decide(messages, { forceCloud: escalateNext });
+      escalateNext = false;
       const latencyMs = Date.now() - t0;
 
-      usage.inputTokens += resp.usage.input_tokens;
-      usage.outputTokens += resp.usage.output_tokens;
-      usage.cacheReadTokens += resp.usage.cache_read_input_tokens ?? 0;
-      usage.cacheCreationTokens += resp.usage.cache_creation_input_tokens ?? 0;
+      if (decision.source === "cloud") {
+        usage.inputTokens += decision.inputTokens;
+        usage.outputTokens += decision.outputTokens;
+        cloudSteps++;
+      } else {
+        localInputTokens += decision.inputTokens;
+        localOutputTokens += decision.outputTokens;
+        localSteps++;
+      }
 
-      messages.push({ role: "assistant", content: resp.content });
+      // Record the decision as a uniform Anthropic assistant turn, whichever
+      // backend produced it, so history stays consistent across escalations.
+      if (decision.source === "cloud" && decision.rawContent) {
+        messages.push({ role: "assistant", content: decision.rawContent });
+      } else {
+        const assistantContent: Anthropic.ContentBlockParam[] = [];
+        if (decision.text) assistantContent.push({ type: "text", text: decision.text });
+        if (decision.toolUse) {
+          assistantContent.push({ type: "tool_use", id: decision.toolUse.id, name: decision.toolUse.name, input: decision.toolUse.input });
+        }
+        messages.push({ role: "assistant", content: assistantContent });
+      }
 
-      const toolUse = resp.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-      const textBlock = resp.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+      const toolUse = decision.toolUse;
 
       recorder?.event("llm", {
         step,
-        inputTokens: resp.usage.input_tokens,
-        outputTokens: resp.usage.output_tokens,
+        source: decision.source,
+        ...(decision.escalated ? { escalated: true } : {}),
+        inputTokens: decision.inputTokens,
+        outputTokens: decision.outputTokens,
         latencyMs,
-        stopReason: resp.stop_reason,
-        ...(textBlock?.text ? { assistantText: textBlock.text } : {}),
+        stopReason: decision.stopReason,
+        ...(decision.text ? { assistantText: decision.text } : {}),
       });
       stepSpan?.setAttributes({
-        "llm.input_tokens": resp.usage.input_tokens,
-        "llm.output_tokens": resp.usage.output_tokens,
+        "llm.input_tokens": decision.inputTokens,
+        "llm.output_tokens": decision.outputTokens,
         "stickshaker.latency_ms": latencyMs,
+        "stickshaker.source": decision.source,
         "stickshaker.tool": toolUse?.name ?? "none",
       });
 
@@ -212,10 +266,10 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       if (!toolUse) {
         stepSpan?.end();
         log("stop (no tool call)");
-        return ret("done", textBlock?.text?.trim() || "(agent stopped without an answer)", step);
+        return ret("done", decision.text?.trim() || "(agent stopped without an answer)", step);
       }
 
-      const input = toolUse.input as Record<string, unknown>;
+      const input = toolUse.input;
       recorder?.event("action", { step, tool: toolUse.name, input });
 
       if (toolUse.name === "done") {
@@ -231,24 +285,24 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
       // Guardrail: decide whether this action may run, in code the model cannot bypass.
       if (isGuardedTool(toolUse.name)) {
-        const decision = evaluateAction(policy, { tool: toolUse.name, input, currentUrl, taskOrigin });
-        if (decision.effect !== "allow") {
-          const approved = decision.effect === "approve" && opts.approve
-            ? await opts.approve({ tool: toolUse.name, input, reason: decision.reason })
+        const gate = evaluateAction(policy, { tool: toolUse.name, input, currentUrl, taskOrigin });
+        if (gate.effect !== "allow") {
+          const approved = gate.effect === "approve" && opts.approve
+            ? await opts.approve({ tool: toolUse.name, input, reason: gate.reason })
             : false;
-          recorder?.event("guardrail", { step, tool: toolUse.name, effect: decision.effect, reason: decision.reason, approved });
-          stepSpan?.setAttributes({ "stickshaker.guardrail": decision.effect, "stickshaker.blocked": !approved });
+          recorder?.event("guardrail", { step, tool: toolUse.name, effect: gate.effect, reason: gate.reason, approved });
+          stepSpan?.setAttributes({ "stickshaker.guardrail": gate.effect, "stickshaker.blocked": !approved });
           if (!approved) {
             consecutiveBlocks++;
-            const why = decision.effect === "deny" ? decision.reason : `operator did not approve (${decision.reason})`;
+            const why = gate.effect === "deny" ? gate.reason : `operator did not approve (${gate.reason})`;
             const body = `BLOCKED BY POLICY: ${why}. The action was NOT performed. Choose a different action that complies with the policy, or call fail if the task cannot be completed within it.\n\nCurrent page (full snapshot):\n${formatFull(cur)}`;
             addObservation(body, toolUse.id, true);
             recorder?.event("observation", { step, kind: "full", url: cur.url, title: cur.title, chars: body.length, body });
             await recorder?.screenshot(browser.page, step);
             stepSpan?.setStatus({ code: SpanStatusCode.ERROR });
             stepSpan?.end();
-            log(`step ${step}: ${toolUse.name} BLOCKED (${decision.effect})`);
-            telemetry.push({ step, kind: "full", inputTokens: resp.usage.input_tokens, outputTokens: resp.usage.output_tokens, observationChars: body.length });
+            log(`step ${step}: ${toolUse.name} BLOCKED (${gate.effect})`);
+            telemetry.push({ step, source: decision.source, kind: "full", inputTokens: decision.inputTokens, outputTokens: decision.outputTokens, observationChars: body.length });
             if (consecutiveBlocks >= MAX_CONSECUTIVE_FAILURES) {
               return ret("failed", `Aborted after ${consecutiveBlocks} consecutive policy-blocked actions. Last: ${why}`, step);
             }
@@ -266,6 +320,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       // abort after too many consecutive failures rather than looping forever.
       if (!result0.ok) {
         consecutiveFailures++;
+        // A failed local action is a low-confidence signal — escalate the retry to Claude.
+        if (decision.source === "local") escalateNext = true;
         recorder?.event("recovery", { step, note: `action failed (${consecutiveFailures} in a row) — forcing a full re-snapshot to replan` });
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           stepSpan?.setStatus({ code: SpanStatusCode.ERROR });
@@ -303,8 +359,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       stepSpan?.setAttributes({ "stickshaker.observation_kind": kind, "stickshaker.observation_chars": body.length });
       stepSpan?.end();
 
-      log(`step ${step}: ${toolUse.name}${summarizeInput(toolUse.name, input)}   [${kind}, ${body.length} chars]`);
-      telemetry.push({ step, kind, inputTokens: resp.usage.input_tokens, outputTokens: resp.usage.output_tokens, observationChars: body.length });
+      const srcTag = routerMode === "cloud" ? "" : `${decision.source}${decision.escalated ? "↑" : ""}, `;
+      log(`step ${step}: ${toolUse.name}${summarizeInput(toolUse.name, input)}   [${srcTag}${kind}, ${body.length} chars]`);
+      telemetry.push({ step, source: decision.source, kind, inputTokens: decision.inputTokens, outputTokens: decision.outputTokens, observationChars: body.length });
 
       prev = cur;
       prevUrl = cur.url;

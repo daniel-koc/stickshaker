@@ -87,3 +87,56 @@ difference). Averaging over repeated trials is what the eval harness below adds.
   5-minute TTL (lost across human-in-the-loop gaps) and history elision mutates
   the prefix, which defeats caching. Reconciling elision with caching is a real
   tension tracked for later; measuring raw tokens keeps this result clean.
+
+## Hybrid routing vs. cloud-only
+
+**Claim:** running cheap steps on a local model and escalating only the hard ones
+to Claude completes the same task for materially less cloud cost.
+
+**How it's measured.** The identical task is run twice through the same agent:
+once `--router cloud` (every step on Claude) and once `--router hybrid` (local
+model first, escalate to Claude when it can't produce a usable action). Cost
+accrues only on cloud steps.
+
+**Setup.** Same form-fill task as the diff benchmark above. Cloud model
+`claude-sonnet-5`; local model `llama3.2` (3B) via Ollama, CPU.
+
+```
+router   steps   local/cloud   cloud-input-tok      cost   status
+cloud      4       0 / 4            10169         $0.0352   done
+hybrid     4       3 / 1             2367         $0.0112   done
+```
+
+Hybrid ran 3 of 4 steps locally (free) and escalated only the final answer to
+Claude — **68% lower cost, 77% fewer cloud input tokens**, same step count, same
+"Received!" confirmation.
+
+**Reproduce:**
+
+```bash
+pnpm stickshaker run "Type 'Stickshaker' into the first text field, choose 'Two' in the dropdown select menu, then click Submit and report the confirmation message." \
+  --url https://www.selenium.dev/selenium/web/web-form.html \
+  --router hybrid --local-model llama3.2 --model claude-sonnet-5
+```
+
+### The accuracy tradeoff (honest)
+
+The local model is cheaper but less precise: on this run llama3.2 typed into
+element `[1]` (the password field) where the task said the *first* text field
+(`[0]`). The Selenium form accepts any input and still showed "Received!", so the
+task "completed" — but the cloud-only run picked `[0]` correctly. This is exactly
+the cost-vs-accuracy tradeoff the routing is meant to expose: hybrid saves money
+on easy steps at some risk on precision. Quantifying that risk properly — a
+success-rate curve across models and tasks, and smarter escalation (e.g. sending
+higher-stakes actions to Claude by default) — is eval-harness territory
+(below). Confidence-based escalation already helps: a local action that
+*fails* escalates the retry.
+
+### Caveats
+
+- **One task, one local model, single run** — establishes the mechanism and a
+  representative number, not a distribution. The eval fixture suite below adds
+  success rate, latency, and repeated trials.
+- **Local latency** isn't shown here: a 3B model on CPU is slower per step than
+  Claude, so hybrid trades wall-clock for cost. The trace's per-step latency
+  (`otel-spans.jsonl`) captures it.

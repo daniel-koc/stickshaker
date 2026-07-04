@@ -45,8 +45,10 @@ export type RunMode = "full" | "diff";
 /** Per-step record for telemetry and the benchmark. */
 export interface StepTelemetry {
   step: number;
+  /** Which backend chose this step's action. */
+  source: "cloud" | "local";
   kind: "full" | "diff";
-  /** Input tokens for the API call that chose this step's action. */
+  /** Input tokens for the call that chose this step's action. */
   inputTokens: number;
   outputTokens: number;
   /** Size of the observation appended after this step, in characters. */

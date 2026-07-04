@@ -7,7 +7,12 @@ import { BrowserSession } from "./browser.js";
 import { formatFull } from "./observe.js";
 import { runAgent } from "./agent.js";
 import { evaluateAction, isGuardedTool, EMPTY_POLICY, type Policy } from "./guardrails.js";
+import { PageMemory, HashEmbedder, OllamaEmbedder } from "./memory.js";
+import { ollamaAvailable } from "./ollama.js";
 import type { ActionResult, Snapshot } from "./types.js";
+
+const DEFAULT_OLLAMA_URL = "http://localhost:11434";
+const DEFAULT_EMBED_MODEL = "nomic-embed-text";
 
 const VERSION = "0.1.0";
 
@@ -18,8 +23,11 @@ function textResult(text: string, isError = false) {
 /** One interactive browser session shared across snapshot/act/recall calls. */
 class Interactive {
   private session?: BrowserSession;
-  private visited: { url: string; title: string; text: string }[] = [];
+  private mem?: PageMemory;
+  private pages = 0;
   taskOrigin?: string;
+
+  constructor(private readonly ollamaUrl: string, private readonly embedModel: string) {}
 
   private async ensure(): Promise<BrowserSession> {
     if (!this.session) this.session = await BrowserSession.launch({ headless: true });
@@ -34,9 +42,19 @@ class Interactive {
     }
   }
 
-  private record(s: Snapshot): void {
-    this.visited.push({ url: s.url, title: s.title, text: s.text });
-    if (this.visited.length > 50) this.visited.shift();
+  private async memory(): Promise<PageMemory> {
+    if (!this.mem) {
+      const embedder = (await ollamaAvailable(this.ollamaUrl))
+        ? new OllamaEmbedder(this.ollamaUrl, this.embedModel)
+        : new HashEmbedder();
+      this.mem = new PageMemory(embedder);
+    }
+    return this.mem;
+  }
+
+  private async record(s: Snapshot): Promise<void> {
+    this.pages++;
+    await (await this.memory()).add(s.url, s.title, s.text);
   }
 
   private noteOrigin(url: string): void {
@@ -53,14 +71,14 @@ class Interactive {
     await b.navigate(url);
     this.noteOrigin(url);
     const s = await b.snapshot();
-    this.record(s);
+    await this.record(s);
     return s;
   }
 
   async snapshot(): Promise<Snapshot> {
     const b = await this.ensure();
     const s = await b.snapshot();
-    this.record(s);
+    await this.record(s);
     return s;
   }
 
@@ -91,33 +109,19 @@ class Interactive {
         result = { ok: false, detail: `unknown tool: ${tool}` };
     }
     const s = await b.snapshot();
-    this.record(s);
+    await this.record(s);
     return { result, snapshot: s };
   }
 
-  recall(query: string, limit = 3): string {
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    const hits: { url: string; snippet: string; score: number }[] = [];
-    for (const p of this.visited) {
-      const lower = p.text.toLowerCase();
-      let score = 0;
-      let first = -1;
-      for (const t of terms) {
-        const idx = lower.indexOf(t);
-        if (idx >= 0) {
-          score++;
-          if (first < 0 || idx < first) first = idx;
-        }
-      }
-      if (score > 0) {
-        const start = Math.max(0, first - 120);
-        const snippet = p.text.slice(start, start + 320).replace(/\s+/g, " ").trim();
-        hits.push({ url: p.url, snippet, score });
-      }
+  async recall(query: string, limit = 3): Promise<string> {
+    const mem = await this.memory();
+    const hits = await mem.recall(query, limit);
+    if (hits.length === 0) {
+      return `No matches for "${query}" across ${this.pages} visited page(s). (memory backend: ${mem.backend})`;
     }
-    hits.sort((a, b) => b.score - a.score);
-    if (hits.length === 0) return `No matches for "${query}" across ${this.visited.length} visited page(s).`;
-    return hits.slice(0, limit).map((h) => `• ${h.url}\n  …${h.snippet}…`).join("\n\n");
+    return hits
+      .map((h) => `• ${h.title || h.url}\n  ${h.url}  [score ${h.score.toFixed(2)}]\n  …${h.text.slice(0, 240)}…`)
+      .join("\n\n");
   }
 
   async close(): Promise<void> {
@@ -127,12 +131,17 @@ class Interactive {
 }
 
 /** Build the Stickshaker MCP server. Reused by the CLI and by the test harness. */
-export function buildServer(opts: { policy?: Policy | undefined; traceDir?: string | undefined }): {
+export function buildServer(opts: {
+  policy?: Policy | undefined;
+  traceDir?: string | undefined;
+  ollamaUrl?: string | undefined;
+  embedModel?: string | undefined;
+}): {
   server: McpServer;
   close: () => Promise<void>;
 } {
   const policy = opts.policy ?? EMPTY_POLICY;
-  const interactive = new Interactive();
+  const interactive = new Interactive(opts.ollamaUrl ?? DEFAULT_OLLAMA_URL, opts.embedModel ?? DEFAULT_EMBED_MODEL);
   const server = new McpServer({ name: "stickshaker", version: VERSION });
 
   server.registerTool(
@@ -217,10 +226,10 @@ export function buildServer(opts: { policy?: Policy | undefined; traceDir?: stri
     {
       title: "Recall from visited pages",
       description:
-        "Keyword-search the text of pages visited so far in this session and return matching snippets. (Vector-based page memory is planned.)",
+        "Vector-search the text of pages visited so far in this session and return the most relevant snippets. Uses Ollama embeddings when available, else a local fallback embedder.",
       inputSchema: { query: z.string().describe("What to look for.") },
     },
-    async ({ query }) => textResult(interactive.recall(query)),
+    async ({ query }) => textResult(await interactive.recall(query)),
   );
 
   server.registerTool(
@@ -257,7 +266,12 @@ export function buildServer(opts: { policy?: Policy | undefined; traceDir?: stri
   return { server, close: () => interactive.close() };
 }
 
-export async function startStdioServer(opts: { policy?: Policy | undefined; traceDir?: string | undefined }): Promise<void> {
+export async function startStdioServer(opts: {
+  policy?: Policy | undefined;
+  traceDir?: string | undefined;
+  ollamaUrl?: string | undefined;
+  embedModel?: string | undefined;
+}): Promise<void> {
   const { server, close } = buildServer(opts);
   const transport = new StdioServerTransport();
   await server.connect(transport);

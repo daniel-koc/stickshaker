@@ -1,6 +1,8 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { runAgent, type AgentResult } from "./agent.js";
+import { runAgent, type AgentResult, type ApproveFn } from "./agent.js";
+import { loadPolicy, type Policy } from "./guardrails.js";
+import type { RouterMode } from "./router.js";
 import type { RunMode } from "./types.js";
 
 interface TraceEvent {
@@ -18,6 +20,9 @@ export interface ResumeOptions {
   keyframeInterval: number;
   headless: boolean;
   traceDir: string;
+  approve?: ApproveFn | undefined;
+  /** Override the recorded policy file; falls back to the one recorded in the trace. */
+  policyPath?: string | undefined;
   onStep?: (line: string) => void;
 }
 
@@ -39,6 +44,10 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     startUrl?: string;
     model: string;
     mode: RunMode;
+    router?: RouterMode;
+    localModel?: string;
+    ollamaUrl?: string;
+    policyPath?: string;
   };
   const events: TraceEvent[] = readFileSync(tracePath, "utf8")
     .split("\n")
@@ -67,6 +76,11 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     ? `You were working on this task in an earlier session and it was interrupted. Actions you already took:\n${summary}\n\nYou are now back on ${lastUrl ?? "the page"}. Continue from the current page state shown below; do not redo work that already succeeded.`
     : undefined;
 
+  // Restore the guardrail policy the original run used (unless overridden), so an
+  // interrupted policy-guarded run does not resume unguarded.
+  const policyPath = opts.policyPath ?? meta.policyPath;
+  const policy: Policy | undefined = policyPath && existsSync(policyPath) ? loadPolicy(policyPath) : undefined;
+
   return runAgent({
     task: meta.task,
     startUrl: lastUrl,
@@ -78,6 +92,12 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     priorContext,
     traceDir: opts.traceDir,
     resumedFrom: runDir,
+    ...(meta.router ? { router: meta.router } : {}),
+    ...(meta.localModel ? { localModel: meta.localModel } : {}),
+    ...(meta.ollamaUrl ? { ollamaUrl: meta.ollamaUrl } : {}),
+    ...(policy ? { policy } : {}),
+    ...(policyPath ? { policyPath } : {}),
+    ...(opts.approve ? { approve: opts.approve } : {}),
     ...(opts.onStep ? { onStep: opts.onStep } : {}),
   });
 }

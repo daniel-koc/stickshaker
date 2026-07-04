@@ -66,10 +66,14 @@ level (fenced between markers a page cannot forge) so a hidden instruction
 reads as data, not a command — the model-facing half. And it runs every
 action through a declarative policy engine (domain allow/deny, origin
 scoping, budgets, human-in-the-loop) *before* the action executes — the
-enforcing half. On the adversarial eval fixtures (white-on-white text, a fake "assistant
-directive" block) the agent answered the real question and ignored the injection
-**2/2**. Two patterns and one capable model isn't proof — but the point is that the
-defense is a boundary, not a please.
+enforcing half. Crucially, the enforcement is on where the browser actually
+**lands**, not on which tool was named: a click or a form submit that
+navigates to a denied origin is caught and reversed, because a policy that
+only inspects the `navigate` tool is a policy with a side door. On the adversarial eval fixtures — white-on-white text, a
+fake "assistant directive" block, and a poisoned WebMCP tool description — the agent
+answered the real question and ignored the injection **3/3**. Three patterns and one
+capable model isn't proof — but the point is that the defense is a boundary, not a
+please.
 
 ## 5. WebMCP will split the web in two, so the runtime must be hybrid
 
@@ -80,8 +84,13 @@ strictly better when it exists: one typed call instead of a snapshot-act
 loop. But most of the web won't have it for years. So a runtime that
 bets entirely on either actuation *or* typed tools is wrong. Stickshaker detects
 page-provided tools each turn and prefers them, falling back to snapshot+act on the
-legacy web — one agent that speaks both dialects. (Page-provided tool descriptions
-are themselves untrusted input, which is exactly why point 4 isn't optional.)
+legacy web — one agent that speaks both dialects. And because a page-provided tool's
+name, description, and result are all attacker-controlled, they get the same
+treatment as page text: the name is sanitized so a hostile one can't crash the run,
+the description is capped and framed as untrusted data, and the result is labeled
+untrusted too. (The `inject-webmcp` fixture is exactly this attack — a tool whose
+description tries to hijack the answer — and it's blocked. Page-provided input is
+still input, which is exactly why point 4 isn't optional.)
 
 ## The through-line
 

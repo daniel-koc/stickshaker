@@ -71,6 +71,11 @@ function makeApprover(mode: ApproveMode): ApproveFn {
   };
 }
 
+/** done → 0, failed → 2, max_steps (or anything unfinished) → 1. */
+function exitCodeFor(status: AgentResult["status"]): number {
+  return status === "done" ? 0 : status === "failed" ? 2 : 1;
+}
+
 function reportSummary(result: AgentResult): void {
   console.error("");
   console.error(`● status: ${result.status}   steps: ${result.steps}`);
@@ -141,13 +146,13 @@ program
       ollamaUrl: opts.ollamaUrl,
       headless: !opts.headed,
       traceDir: opts.trace ? opts.traceDir : undefined,
-      ...(opts.policy ? { policy: loadPolicy(opts.policy) } : {}),
+      ...(opts.policy ? { policy: loadPolicy(opts.policy), policyPath: opts.policy } : {}),
       approve: makeApprover(opts.approve),
       onStep: (line) => console.error("  " + line),
     });
     reportSummary(result);
     console.log(result.message);
-    process.exit(result.status === "failed" ? 2 : 0);
+    process.exit(exitCodeFor(result.status));
   });
 
 program
@@ -157,8 +162,10 @@ program
   .option("--max-steps <n>", "maximum additional steps", parsePositiveInt, 25)
   .option("--keyframe-interval <n>", "diff mode: force a full snapshot every N steps", parsePositiveInt, 5)
   .option("--trace-dir <dir>", "directory for the resumed run's trace", ".stickshaker/traces")
+  .option("--policy <file>", "override the guardrail policy (default: the one recorded in the trace)")
+  .option("--approve <mode>", "how to handle actions needing approval: auto | prompt | deny", parseApproveMode, "prompt")
   .option("--headed", "show the browser window", false)
-  .action(async (runDir: string, opts: { maxSteps: number; keyframeInterval: number; traceDir: string; headed: boolean }) => {
+  .action(async (runDir: string, opts: { maxSteps: number; keyframeInterval: number; traceDir: string; policy?: string; approve: ApproveMode; headed: boolean }) => {
     requireKey();
     console.error(`▶ resuming: ${runDir}`);
     const result = await resumeRun(runDir, {
@@ -166,11 +173,13 @@ program
       keyframeInterval: opts.keyframeInterval,
       headless: !opts.headed,
       traceDir: opts.traceDir,
+      approve: makeApprover(opts.approve),
+      ...(opts.policy ? { policyPath: opts.policy } : {}),
       onStep: (line) => console.error("  " + line),
     });
     reportSummary(result);
     console.log(result.message);
-    process.exit(result.status === "failed" ? 2 : 0);
+    process.exit(exitCodeFor(result.status));
   });
 
 program

@@ -39,7 +39,8 @@ export function loadPolicy(path: string): Policy {
 
 function hostOf(url: string): string | null {
   try {
-    return new URL(url).host.toLowerCase();
+    // hostname, not host: a policy entry like "localhost" must match "localhost:8080".
+    return new URL(url).hostname.toLowerCase();
   } catch {
     return null;
   }
@@ -93,6 +94,29 @@ export function evaluateAction(policy: Policy, ctx: ActionContext): Decision {
   }
   if (policy.requireApproval?.includes(ctx.tool)) {
     return { effect: "approve", reason: `tool "${ctx.tool}" requires approval` };
+  }
+  return { effect: "allow" };
+}
+
+/**
+ * Check where the browser actually *landed* after an action, independent of which
+ * tool triggered it. The pre-action check only sees the `navigate` tool's target
+ * URL; this catches a denied or cross-origin page reached via a click, a form
+ * submit, or a page-provided tool that set `location`. Only the domain/origin
+ * rules apply here — `block` / `requireApproval` are per-tool and already handled
+ * before the action ran.
+ */
+export function evaluateDestination(policy: Policy, url: string, taskOrigin?: string): Decision {
+  const host = hostOf(url);
+  const origin = originOf(url);
+  if (host && policy.domains?.deny?.some((p) => globMatch(p, host))) {
+    return { effect: "deny", reason: `landed on denied domain "${host}"` };
+  }
+  if (policy.domains?.allow?.length && host && !policy.domains.allow.some((p) => globMatch(p, host))) {
+    return { effect: "deny", reason: `landed on "${host}", which is not in the policy allowlist` };
+  }
+  if (policy.sameOriginOnly && taskOrigin && origin && origin !== taskOrigin) {
+    return { effect: "approve", reason: `landed cross-origin at ${origin} (task origin ${taskOrigin})` };
   }
   return { effect: "allow" };
 }

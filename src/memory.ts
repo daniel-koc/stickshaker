@@ -119,7 +119,7 @@ export class PageMemory {
   }
 }
 
-/** Split page text into ~600-char chunks on paragraph/line boundaries. */
+/** Split page text into fixed ~600-char windows (whitespace collapsed first). */
 function chunkText(text: string, size = 600): string[] {
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) return [];

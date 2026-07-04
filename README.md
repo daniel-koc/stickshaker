@@ -16,9 +16,10 @@ Cursor, …) a policy-guarded browser via the
 > harness, and **WebMCP-hybrid** actuation — the agent prefers a page's typed
 > tools when it exposes them (Chrome origin-trial standard) and falls back to
 > snapshot+act on the legacy web. On the eval suite Claude Sonnet scores **8/8
-> tasks and blocks 2/2 injection attacks**; see
-> [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale is written up in
-> [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems problem."*
+> tasks and blocks 3/3 injection attacks** (including a poisoned WebMCP tool
+> description); see [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale
+> is written up in [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems
+> problem."*
 
 ---
 
@@ -57,7 +58,7 @@ The full argument, with the numbers behind each claim, is in
 |---------|--------------|
 | `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
-| `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (8 tasks + 2 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
+| `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (8 tasks + 3 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
 | `stickshaker resume <run-dir>` | Continue an interrupted run from its trace. |
@@ -74,7 +75,7 @@ cheaper. Every run prints per-run **token and cost** accounting at the end.
 |------|--------------|
 | `browse_task(task, url?, mode?, max_steps?)` | Run the autonomous agent on a natural-language task and return its answer. Self-contained: opens its own browser, records a trace, closes. |
 | `snapshot(url?)` | Interactive elements (each with a `[ref]`) + visible text of the shared session's current page; optionally navigate first. |
-| `act(tool, ref?, …)` | One action in the shared session — `navigate`, `click`, `type`, `select_option`, `scroll`, or `go_back` — then the resulting snapshot. |
+| `act(tool, ref?, …)` | One action in the shared session — `navigate`, `click`, `type`, `select_option`, `scroll`, `go_back`, or a `webmcp` call — then the resulting snapshot. |
 | `recall(query)` | Vector-search the text of pages visited in this session. |
 | `get_trace(run_dir)` | Read a recorded run's trace summary (confined to the trace directory). |
 
@@ -375,7 +376,7 @@ pnpm stickshaker run "Fill the form with 'hello' and submit" \
 pnpm stickshaker view .stickshaker/traces/<run-dir>
 pnpm stickshaker resume .stickshaker/traces/<run-dir>
 
-# The eval suite: 8 tasks + 2 injection attacks
+# The eval suite: 8 tasks + 3 injection attacks
 pnpm stickshaker eval --model claude-sonnet-5
 
 # Diff-vs-full token benchmark on any task
@@ -450,6 +451,9 @@ budgets: { maxSteps: 30, maxCostUsd: 1.00 }
   a compliant alternative (or fail). Repeated blocked attempts abort the run.
 - **Approval** decisions invoke the `--approve` gate: `prompt` (the default)
   asks the operator on the terminal, `deny` refuses, `auto` allows.
+- **Enforcement is on destinations, not tool names**: a click, form submit, or
+  popup that *lands* on a denied origin is caught after the fact and reversed —
+  a policy that only inspects the `navigate` tool has a side door.
 - **Provenance labeling**: page text is wrapped as explicitly untrusted
   content, so an instruction hidden in a page reads to the model as data, not a
   command. This is the model-facing half; the policy engine is the enforcing
@@ -517,7 +521,7 @@ Every claim reproduces with one command — see
 | Claim | Measured |
 |-------|----------|
 | Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
-| Eval suite (Sonnet) | **8/8 tasks, 2/2 injections blocked** — single run per cell |
+| Eval suite (Sonnet) | **8/8 tasks, 3/3 injections blocked** — single run per cell |
 | Hybrid routing (4-task slice) | **~55% cheaper** than cloud-only, at 3/4 vs 4/4 — the cost/accuracy dial |
 
 ---
@@ -578,7 +582,7 @@ pnpm build           # compile to dist/
 
 - **No iframe or shadow-DOM piercing yet.** The snapshot covers the top
   document only; content inside frames and web components is invisible to it.
-- **The injection suite is young.** 2/2 adversarial patterns are blocked so
+- **The injection suite is young.** 3/3 adversarial patterns are blocked so
   far; more ingestion surfaces (and an attack that targets the enforcing
   half rather than the model) are still to be covered.
 - **One tab at a time.** Popups and new tabs are not driven; there is no

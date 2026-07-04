@@ -10,6 +10,11 @@ export interface RunMeta {
   mode: RunMode;
   startedAt: string;
   resumedFrom?: string;
+  /** Routing + policy, recorded so `resume` can restore guardrails and backends. */
+  router?: string;
+  localModel?: string;
+  ollamaUrl?: string;
+  policyPath?: string;
 }
 
 export interface RunSummary {
@@ -25,7 +30,11 @@ export interface RunSummary {
 export function runDirName(task: string): string {
   const iso = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
   const slug = task.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "run";
-  return `${iso}_${slug}`;
+  // Random suffix: timestamp granularity is one second, so two runs of the same
+  // task in the same second (e.g. concurrent browse_task calls) would otherwise
+  // collide and overwrite each other's trace.
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `${iso}_${slug}_${rand}`;
 }
 
 /**

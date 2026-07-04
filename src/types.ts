@@ -2,7 +2,11 @@
 
 /** One interactive element found on the page, addressable by `ref`. */
 export interface ElementInfo {
-  /** Index into the current snapshot. Valid only until the next snapshot. */
+  /**
+   * Stable id stamped on the DOM node (`data-sk-ref`). The same element keeps
+   * this ref across turns until it is removed or the document is replaced, which
+   * is what lets successive snapshots be diffed by ref.
+   */
   ref: number;
   tag: string;
   type?: string;
@@ -23,6 +27,12 @@ export interface Snapshot {
   text: string;
   elementsTruncated: boolean;
   textTruncated: boolean;
+  /**
+   * Random token identifying the current document. A full navigation — including
+   * a same-URL reload — creates a fresh JS context and thus a new token, so the
+   * agent can force a keyframe when the document was replaced under an unchanged URL.
+   */
+  docToken?: string;
 }
 
 /** Outcome of a single browser action. */

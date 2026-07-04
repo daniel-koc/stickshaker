@@ -12,9 +12,13 @@ export interface Decision {
   rawContent?: Anthropic.ContentBlock[] | undefined;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number | undefined;
+  cacheCreationTokens?: number | undefined;
   stopReason?: string | undefined;
   /** True when hybrid tried local first and fell back to cloud this step. */
   escalated?: boolean;
+  /** Set when the step cannot proceed at all (e.g. escalation needed but no API key). */
+  hardFail?: string | undefined;
 }
 
 export interface RouterConfig {
@@ -25,6 +29,8 @@ export interface RouterConfig {
   ollamaUrl: string;
   system: string;
   maxTokens: number;
+  /** Whether an ANTHROPIC_API_KEY is available for cloud steps / escalation. */
+  hasKey: boolean;
 }
 
 /**
@@ -38,13 +44,25 @@ export class Router {
   constructor(private readonly cfg: RouterConfig) {}
 
   async decide(messages: Anthropic.MessageParam[], opts: { tools: Anthropic.Tool[]; forceCloud: boolean }): Promise<Decision> {
-    if (this.cfg.mode === "cloud" || opts.forceCloud) return this.cloud(messages, opts.tools);
+    if (this.cfg.mode === "cloud" || opts.forceCloud) {
+      return this.cfg.hasKey ? this.cloud(messages, opts.tools) : this.noKeyFail(opts.forceCloud);
+    }
 
     const local = await this.tryLocal(messages, opts.tools);
     if (local) return local;
 
-    // local produced nothing usable (or Ollama is down) → escalate to Claude.
+    // local produced nothing usable (or Ollama is down) → escalate to Claude,
+    // unless there's no key to escalate with (keyless --router local): fail cleanly
+    // rather than firing a doomed API call with a placeholder key.
+    if (!this.cfg.hasKey) return this.noKeyFail(false);
     return { ...(await this.cloud(messages, opts.tools)), escalated: true };
+  }
+
+  private noKeyFail(afterFailedLocal: boolean): Decision {
+    const why = afterFailedLocal
+      ? "The local model's action failed and there is no ANTHROPIC_API_KEY set to escalate to Claude."
+      : "The local model could not produce a usable action and there is no ANTHROPIC_API_KEY set to escalate to Claude.";
+    return { source: "local", inputTokens: 0, outputTokens: 0, hardFail: `${why} Set the key, use a more capable local model, or run --router cloud.` };
   }
 
   private async tryLocal(messages: Anthropic.MessageParam[], tools: Anthropic.Tool[]): Promise<Decision | null> {
@@ -88,6 +106,8 @@ export class Router {
       toolUse: toolUse ? { id: toolUse.id, name: toolUse.name, input: toolUse.input as Record<string, unknown> } : undefined,
       inputTokens: resp.usage.input_tokens,
       outputTokens: resp.usage.output_tokens,
+      cacheReadTokens: resp.usage.cache_read_input_tokens ?? 0,
+      cacheCreationTokens: resp.usage.cache_creation_input_tokens ?? 0,
       stopReason: resp.stop_reason ?? undefined,
     };
   }

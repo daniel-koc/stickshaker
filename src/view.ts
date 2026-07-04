@@ -23,7 +23,9 @@ function esc(s: unknown): string {
   return String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /**
@@ -137,7 +139,8 @@ export function generateReport(runDir: string): string {
     })
     .join("\n");
 
-  const html = `<meta charset="utf-8">
+  const html = `<!doctype html>
+<meta charset="utf-8">
 <title>Stickshaker run — ${esc(summary.task ?? runDir)}</title>
 <style>
   :root { color-scheme: dark; }

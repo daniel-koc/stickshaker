@@ -34,11 +34,52 @@ export class BrowserSession {
     // calls to preserve function names; those helpers don't exist in the page, so
     // define a no-op shim. Harmless after a `tsc` build, required under tsx.
     await s.context.addInitScript(() => {
-      const g = globalThis as unknown as { __name?: (fn: unknown) => unknown; __skNextRef?: number };
+      const g = globalThis as unknown as {
+        __name?: (fn: unknown) => unknown;
+        __skNextRef?: number;
+        __skDocToken?: string;
+        __webmcp_tools?: Record<string, unknown>;
+        agent?: { provideContext?: (ctx: unknown) => void };
+        navigator?: { modelContext?: Record<string, unknown> };
+      };
       g.__name ??= (fn) => fn;
       // Monotonic ref counter, per document. Resets on navigation (fresh window),
       // which is exactly where the agent forces a keyframe.
       g.__skNextRef ??= 0;
+      // Per-document token: a fresh JS context (any full navigation, including a
+      // same-URL reload) gets a new value, so the agent can force a keyframe when
+      // the document was replaced even though the URL string didn't change.
+      g.__skDocToken ??= Math.random().toString(36).slice(2);
+      // WebMCP origin-trial shim. On real origin-trial Chrome the browser provides
+      // the tool-registration API (window.agent / navigator.modelContext); we
+      // polyfill that same surface and mirror any registered tools into a registry
+      // the agent reads, so a page written against the WebMCP API works under
+      // Stickshaker without shipping its own shim.
+      g.__webmcp_tools ??= {};
+      const registry = g.__webmcp_tools;
+      const register = (tool: unknown): void => {
+        const t = tool as { name?: string } | null;
+        if (t && typeof t.name === "string") registry[t.name] = t;
+      };
+      const provideContext = (ctx: unknown): void => {
+        const list = (ctx as { tools?: unknown[] } | null)?.tools ?? [];
+        for (const t of list) register(t);
+      };
+      const agent = g.agent ?? (g.agent = {});
+      agent.provideContext ??= provideContext;
+      try {
+        const nav = g.navigator;
+        if (nav) {
+          const mc = (nav.modelContext ?? (nav.modelContext = {})) as {
+            provideContext?: (ctx: unknown) => void;
+            registerTool?: (t: unknown) => void;
+          };
+          mc.provideContext ??= provideContext;
+          mc.registerTool ??= register;
+        }
+      } catch {
+        /* navigator can be read-only in some contexts — the window.agent path still works */
+      }
     });
     s.page = await s.context.newPage();
     return s;
@@ -100,8 +141,10 @@ export class BrowserSession {
           if (title) return title.trim();
           const alt = el.getAttribute("alt");
           if (alt) return alt.trim();
+          // Never fall back to a secret field's value for the accessible name.
+          const isPassword = el.tagName === "INPUT" && (el as HTMLInputElement).type === "password";
           const value = (el as HTMLInputElement).value;
-          if (value) return value.trim();
+          if (value && !isPassword) return value.trim();
           return "";
         };
 
@@ -133,7 +176,8 @@ export class BrowserSession {
           }
           if (tag === "input" || tag === "textarea" || tag === "select") {
             const value = (el as HTMLInputElement).value;
-            if (value) info.value = value.slice(0, 80);
+            // Never surface secret field contents into snapshots, traces, or reports.
+            if (value) info.value = inputType === "password" ? "[redacted]" : value.slice(0, 80);
           }
           elements.push(info);
         }
@@ -150,6 +194,7 @@ export class BrowserSession {
           text: fullText.slice(0, maxText),
           elementsTruncated,
           textTruncated: fullText.length > maxText,
+          docToken: (globalThis as unknown as { __skDocToken?: string }).__skDocToken,
         };
       },
       { maxElements: MAX_ELEMENTS, maxText: MAX_TEXT_CHARS },

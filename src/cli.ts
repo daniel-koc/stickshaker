@@ -111,12 +111,13 @@ program
     }
     const [full, diff] = results as [AgentResult, AgentResult];
 
+    const deltaSteps = (r: AgentResult) => r.telemetry.filter((t) => t.kind === "diff").length;
     const row = (r: AgentResult) =>
-      `${r.mode.padEnd(5)} ${String(r.steps).padStart(5)} ${String(r.usage.inputTokens).padStart(11)} ${String(r.usage.outputTokens).padStart(11)} ${("$" + r.costUsd.toFixed(4)).padStart(9)}  ${r.status}`;
+      `${r.mode.padEnd(5)} ${String(r.steps).padStart(5)} ${String(deltaSteps(r)).padStart(7)} ${String(r.usage.inputTokens).padStart(11)} ${String(r.usage.outputTokens).padStart(11)} ${("$" + r.costUsd.toFixed(4)).padStart(9)}  ${r.status}`;
 
     console.log("");
     console.log(`model: ${opts.model}   task: ${task}`);
-    console.log("mode   steps   input-tok   output-tok      cost  status");
+    console.log("mode   steps  deltas   input-tok   output-tok      cost  status");
     console.log(row(full));
     console.log(row(diff));
     if (full.usage.inputTokens > 0) {
@@ -124,6 +125,15 @@ program
       const costReduction = full.costUsd > 0 ? (1 - diff.costUsd / full.costUsd) * 100 : 0;
       console.log("");
       console.log(`diff vs full: ${reduction.toFixed(1)}% fewer input tokens, ${costReduction.toFixed(1)}% lower cost.`);
+    }
+    // Diff mode only diverges from full once it sends a delta. If it never did,
+    // the two runs sent identical observations and the comparison is meaningless.
+    if (deltaSteps(diff) === 0) {
+      console.log("");
+      console.log("⚠ diff mode sent 0 deltas: every step was a keyframe (first step, or a");
+      console.log("  navigation each turn), so both modes sent identical observations. Diff");
+      console.log("  mode only helps on multi-step tasks that stay on the same page. Also note");
+      console.log("  each mode is run once, so short tasks are dominated by model nondeterminism.");
     }
   });
 

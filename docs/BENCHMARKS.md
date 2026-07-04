@@ -57,6 +57,25 @@ step count (every past full snapshot is re-sent on every later turn), while diff
 mode's retained context stays bounded by the keyframe interval. A five-step task
 is the shallow end of that curve.
 
+### When diff mode helps — and when it doesn't
+
+Diff mode only diverges from the baseline once it sends a **delta**, which never
+happens on the first step (always a keyframe) or on a step that navigates
+(navigation forces a keyframe). So:
+
+- **No benefit:** single-step tasks (e.g. "read the top headline") and tasks that
+  navigate on every step — every observation is a full keyframe in both modes, so
+  the token counts are identical. `bench` now prints a `deltas` column and warns
+  when diff mode sent zero deltas, so a degenerate comparison is obvious.
+- **Benefit grows with same-page depth:** the more consecutive actions the agent
+  takes on one page (form filling, filtering, pagination, expanding sections), the
+  more full snapshots get replaced by small deltas and the more history elision
+  saves. The form-fill task above (3 same-page actions) is a modest case.
+
+Because each mode is run once, short tasks are also dominated by model
+nondeterminism (a mode that happens to take one extra step swamps the encoding
+difference). Averaging over repeated trials is what the eval harness below adds.
+
 ### Caveats (honest scope)
 
 - **One task, one model.** Establishes the mechanism, not a distribution. The

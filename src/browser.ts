@@ -218,6 +218,52 @@ export class BrowserSession {
     }
   }
 
+  /**
+   * WebMCP: pages in the Chrome origin trial expose typed tools to agents instead
+   * of requiring click/type. We read the registry a WebMCP page maintains (the
+   * origin-trial API populates it via navigator.modelContext / window.agent) and
+   * return each tool's metadata; calling one runs the page's own handler.
+   */
+  async detectWebMcpTools(): Promise<Array<{ name: string; description: string; inputSchema: unknown }>> {
+    try {
+      return await this.page.evaluate(() => {
+        const g = globalThis as unknown as { __webmcp_tools?: Record<string, { name: string; description?: string; inputSchema?: unknown }> };
+        const reg = g.__webmcp_tools;
+        if (!reg) return [];
+        return Object.values(reg).map((t) => ({
+          name: t.name,
+          description: t.description ?? "",
+          inputSchema: t.inputSchema ?? { type: "object", properties: {} },
+        }));
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  async callWebMcpTool(name: string, args: Record<string, unknown>): Promise<ActionResult> {
+    try {
+      const result = await this.page.evaluate(
+        async ({ n, a }) => {
+          const g = globalThis as unknown as { __webmcp_tools?: Record<string, { execute: (x: unknown) => unknown }> };
+          const tool = g.__webmcp_tools?.[n];
+          if (!tool) return { ok: false, detail: `no page tool named "${n}"` };
+          const res = await tool.execute(a);
+          if (res && typeof res === "object") {
+            const r = res as { ok?: boolean; message?: string };
+            return { ok: r.ok !== false, detail: String(r.message ?? JSON.stringify(res)) };
+          }
+          return { ok: true, detail: String(res) };
+        },
+        { n: name, a: args },
+      );
+      await this.settle();
+      return result as ActionResult;
+    } catch (e) {
+      return { ok: false, detail: `webmcp call "${name}" failed: ${errMsg(e)}` };
+    }
+  }
+
   async close(): Promise<void> {
     await this.browser.close();
   }

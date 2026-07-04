@@ -9,14 +9,16 @@ server** that gives any MCP-enabled client (Claude Code, Claude Desktop,
 Cursor, …) a policy-guarded browser via the
 [Model Context Protocol](https://modelcontextprotocol.io).
 
-> **Status: eval harness.** On top of the earlier layers (CLI + Playwright loop
-> + tool-use agent + snapshot **diffing** + **flight-recorder** traces + **MCP
-> server** + **guardrails** + local-first **routing**), Stickshaker now has a
-> self-hosted **eval suite** with automated grading and an adversarial
-> **injection** suite. One command runs it and prints a reproducible table — on
-> the current suite, Claude Sonnet scores **7/7 tasks and blocks 2/2 injection
-> attacks**; see [BENCHMARKS.md](docs/BENCHMARKS.md). Still ahead: multi-agent
-> orchestration and WebMCP-hybrid actuation.
+> **Status: feature-complete.** An incremental snapshot-**diffing** browser
+> agent with replayable **flight-recorder** traces, an authored **MCP server**,
+> an out-of-model **guardrail** engine with injection defenses, local-first
+> model **routing** (Ollama → Claude), a self-hosted **eval + injection**
+> harness, and **WebMCP-hybrid** actuation — the agent prefers a page's typed
+> tools when it exposes them (Chrome origin-trial standard) and falls back to
+> snapshot+act on the legacy web. On the eval suite Claude Sonnet scores **8/8
+> tasks and blocks 2/2 injection attacks**; see
+> [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale is written up in
+> [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems problem."*
 
 ---
 
@@ -40,6 +42,12 @@ those is a systems mistake, and each has a systems fix here:
 - **Cost is a dial, not a constant.** Hybrid routing runs cheap steps on a
   local Ollama model, escalating to Claude only when it has to, so easy steps
   are free and only the hard ones cost cloud tokens.
+- **The web is splitting in two.** Where a page exposes typed WebMCP tools,
+  the agent calls them directly; on the legacy web it falls back to
+  snapshot+act — one agent that speaks both dialects.
+
+The full argument, with the numbers behind each claim, is in
+[DESIGN.md](docs/DESIGN.md).
 
 ---
 
@@ -49,7 +57,7 @@ those is a systems mistake, and each has a systems fix here:
 |---------|--------------|
 | `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
-| `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (7 tasks + 2 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
+| `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (8 tasks + 2 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
 | `stickshaker resume <run-dir>` | Continue an interrupted run from its trace. |
@@ -367,7 +375,7 @@ pnpm stickshaker run "Fill the form with 'hello' and submit" \
 pnpm stickshaker view .stickshaker/traces/<run-dir>
 pnpm stickshaker resume .stickshaker/traces/<run-dir>
 
-# The eval suite: 7 tasks + 2 injection attacks
+# The eval suite: 8 tasks + 2 injection attacks
 pnpm stickshaker eval --model claude-sonnet-5
 
 # Diff-vs-full token benchmark on any task
@@ -477,6 +485,28 @@ Stickshaker's Anthropic tools and conversation are converted on the fly.
 vector similarity — Ollama embeddings (`nomic-embed-text`) when available, else
 a dependency-free local hashing embedder, over an in-process cosine index.
 
+## WebMCP-hybrid actuation
+
+Chrome's [WebMCP](https://developer.chrome.com/docs/ai/webmcp) origin trial
+lets a page expose typed tools to agents (e.g. `place_order(product,
+quantity)`) instead of requiring click/type. Each turn, Stickshaker detects any
+tools the page has registered and offers them to the model alongside the
+built-in `click`/`type` tools, prefixed `webmcp_…`; the system prompt tells the
+model to **prefer** them. On a WebMCP-enabled page it calls the typed tool
+directly in one step; on the legacy web (no tools) it falls back to
+snapshot+act — one agent that speaks both. Page-provided tools are still
+subject to the guardrail policy, and their descriptions are treated as
+untrusted input — see the
+[security-boundary](docs/DESIGN.md#4-the-model-is-not-a-security-boundary)
+and
+[WebMCP](docs/DESIGN.md#5-webmcp-will-split-the-web-in-two-so-the-runtime-must-be-hybrid)
+sections of DESIGN.md. The `webmcp` eval fixture demonstrates the path
+end to end.
+
+> **Demo capture:** `report.html` (from any traced run) is the visual artifact
+> — screenshots of every step, offline. For a README GIF, run with `--headed`
+> and screen-record, or capture Playwright's own video of the session.
+
 ---
 
 ## Benchmarks
@@ -487,7 +517,7 @@ Every claim reproduces with one command — see
 | Claim | Measured |
 |-------|----------|
 | Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
-| Eval suite (Sonnet) | **7/7 tasks, 2/2 injections blocked** — single run per cell |
+| Eval suite (Sonnet) | **8/8 tasks, 2/2 injections blocked** — single run per cell |
 | Hybrid routing (4-task slice) | **~55% cheaper** than cloud-only, at 3/4 vs 4/4 — the cost/accuracy dial |
 
 ---
@@ -541,6 +571,20 @@ pnpm stickshaker …   # run the CLI via tsx (no build step)
 pnpm typecheck       # tsc --noEmit
 pnpm build           # compile to dist/
 ```
+
+---
+
+## Limitations
+
+- **No iframe or shadow-DOM piercing yet.** The snapshot covers the top
+  document only; content inside frames and web components is invisible to it.
+- **The injection suite is young.** 2/2 adversarial patterns are blocked so
+  far; more ingestion surfaces (and an attack that targets the enforcing
+  half rather than the model) are still to be covered.
+- **One tab at a time.** Popups and new tabs are not driven; there is no
+  multi-tab orchestration.
+- **Backends: Claude + Ollama.** An OpenAI-compatible cloud backend would
+  slot into the router, but no GPT column exists today.
 
 ---
 

@@ -23,7 +23,6 @@ export interface RouterConfig {
   model: string;
   localModel: string;
   ollamaUrl: string;
-  tools: Anthropic.Tool[];
   system: string;
   maxTokens: number;
 }
@@ -38,28 +37,28 @@ export class Router {
   private counter = 0;
   constructor(private readonly cfg: RouterConfig) {}
 
-  async decide(messages: Anthropic.MessageParam[], opts: { forceCloud: boolean }): Promise<Decision> {
-    if (this.cfg.mode === "cloud" || opts.forceCloud) return this.cloud(messages);
+  async decide(messages: Anthropic.MessageParam[], opts: { tools: Anthropic.Tool[]; forceCloud: boolean }): Promise<Decision> {
+    if (this.cfg.mode === "cloud" || opts.forceCloud) return this.cloud(messages, opts.tools);
 
-    const local = await this.tryLocal(messages);
+    const local = await this.tryLocal(messages, opts.tools);
     if (local) return local;
 
     // local produced nothing usable (or Ollama is down) → escalate to Claude.
-    return { ...(await this.cloud(messages)), escalated: true };
+    return { ...(await this.cloud(messages, opts.tools)), escalated: true };
   }
 
-  private async tryLocal(messages: Anthropic.MessageParam[]): Promise<Decision | null> {
+  private async tryLocal(messages: Anthropic.MessageParam[], tools: Anthropic.Tool[]): Promise<Decision | null> {
     const call = await callOllama({
       baseUrl: this.cfg.ollamaUrl,
       model: this.cfg.localModel,
       system: this.cfg.system,
-      tools: this.cfg.tools,
+      tools,
       messages,
     });
     if (!call) return null;
     // Reject an action that names a tool we don't have — that's a low-confidence
     // signal, so escalate rather than execute garbage.
-    if (!this.cfg.tools.some((t) => t.name === call.name) && call.name !== "done" && call.name !== "fail") {
+    if (!tools.some((t) => t.name === call.name) && call.name !== "done" && call.name !== "fail") {
       return null;
     }
     return {
@@ -71,12 +70,12 @@ export class Router {
     };
   }
 
-  private async cloud(messages: Anthropic.MessageParam[]): Promise<Decision> {
+  private async cloud(messages: Anthropic.MessageParam[], tools: Anthropic.Tool[]): Promise<Decision> {
     const resp = await this.cfg.client.messages.create({
       model: this.cfg.model,
       max_tokens: this.cfg.maxTokens,
       system: this.cfg.system,
-      tools: this.cfg.tools,
+      tools,
       tool_choice: { type: "auto", disable_parallel_tool_use: true },
       messages,
     });

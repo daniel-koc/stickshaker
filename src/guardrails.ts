@@ -67,7 +67,8 @@ function globMatch(pattern: string, host: string): boolean {
 
 /** The browser-affecting tools that are subject to policy. */
 export function isGuardedTool(tool: string): boolean {
-  return ["navigate", "click", "type", "select_option", "scroll", "go_back"].includes(tool);
+  // Page-provided WebMCP tools run code on the current origin, so gate them too.
+  return tool.startsWith("webmcp_") || ["navigate", "click", "type", "select_option", "scroll", "go_back"].includes(tool);
 }
 
 export function evaluateAction(policy: Policy, ctx: ActionContext): Decision {

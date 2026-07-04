@@ -25,14 +25,19 @@ export class BrowserSession {
   private browser!: Browser;
   private context!: BrowserContext;
   page!: Page;
+  private popups: Page[] = [];
 
   static async launch(opts: BrowserOptions): Promise<BrowserSession> {
     const s = new BrowserSession();
     s.browser = await chromium.launch({ headless: opts.headless });
     s.context = await s.browser.newContext({ viewport: { width: 1280, height: 800 } });
-    // The dev runner (tsx/esbuild) rewrites page.evaluate callbacks with __name()
-    // calls to preserve function names; those helpers don't exist in the page, so
-    // define a no-op shim. Harmless after a `tsc` build, required under tsx.
+    // Runs in every document before page scripts, setting up three things: (1) a
+    // no-op __name shim (tsx/esbuild injects __name() into page.evaluate callbacks,
+    // which don't exist in the page; harmless after a `tsc` build, required under
+    // tsx); (2) a monotonic ref counter and a per-document token; (3) the WebMCP
+    // registration API. The WebMCP shim is intentionally always-on for every origin
+    // the agent visits — that's what lets a real WebMCP page work — which does make
+    // `navigator.modelContext` / `window.agent` observable to every page.
     await s.context.addInitScript(() => {
       const g = globalThis as unknown as {
         __name?: (fn: unknown) => unknown;
@@ -82,6 +87,12 @@ export class BrowserSession {
       }
     });
     s.page = await s.context.newPage();
+    // Track popups/new tabs opened AFTER the main page (the main page's own `page`
+    // event already fired above). The agent drives only the main page, so these are
+    // enforced against policy and closed via drainPopups().
+    s.context.on("page", (p) => {
+      s.popups.push(p);
+    });
     return s;
   }
 
@@ -307,6 +318,31 @@ export class BrowserSession {
     } catch (e) {
       return { ok: false, detail: `webmcp call "${name}" failed: ${errMsg(e)}` };
     }
+  }
+
+  /**
+   * Return the URLs of any popups/new tabs opened since the last drain, and close
+   * them. The agent only drives the main page, so a popup is either an escape hatch
+   * around the guardrail (the caller enforces policy on the returned URLs) or dead
+   * weight — either way it gets closed here.
+   */
+  async drainPopups(): Promise<string[]> {
+    const popups = this.popups;
+    this.popups = [];
+    const urls = await Promise.all(
+      popups.map(async (p) => {
+        try {
+          if (p.isClosed()) return "";
+          await p.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
+          const url = p.isClosed() ? "" : p.url();
+          if (!p.isClosed()) await p.close();
+          return url;
+        } catch {
+          return "";
+        }
+      }),
+    );
+    return urls.filter(Boolean);
   }
 
   async close(): Promise<void> {

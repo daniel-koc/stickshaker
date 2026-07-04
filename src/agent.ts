@@ -355,7 +355,6 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
           }
         }
       }
-      consecutiveBlocks = 0;
 
       const result0 = await execAction(browser, toolUse.name, input, webmcpNames);
       recorder?.event("result", { step, ok: result0.ok, detail: result0.detail });
@@ -379,6 +378,44 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       }
 
       cur = await browser.snapshot();
+
+      // Popups / new tabs escape the single-page observation loop entirely. Close any
+      // the action opened and enforce the destination policy on where they pointed —
+      // a target=_blank link to a denied origin must not slip past the guardrail.
+      {
+        const popupUrls = await browser.drainPopups();
+        let deniedReason: string | undefined;
+        for (const u of popupUrls) {
+          const d = evaluateDestination(policy, u, taskOrigin);
+          if (d.effect !== "allow") {
+            deniedReason = d.effect === "deny" ? d.reason : `operator did not approve (${d.reason})`;
+            break;
+          }
+        }
+        if (deniedReason) {
+          consecutiveBlocks++;
+          if (opts.mode === "diff") keyframeGroup++;
+          recorder?.event("guardrail", { step, tool: toolUse.name, effect: "deny", reason: deniedReason, stage: "popup" });
+          const body = `BLOCKED BY POLICY: the action opened a new tab to a disallowed destination (${deniedReason}); it was closed. Do not retry that route; choose a compliant action or call fail.\n\nCurrent page (full snapshot):\n${formatFull(cur)}`;
+          addObservation(body, toolUse.id, true);
+          recorder?.event("observation", { step, kind: "full", url: cur.url, title: cur.title, chars: body.length, body });
+          await recorder?.screenshot(browser.page, step);
+          stepSpan?.setAttributes({ "stickshaker.guardrail": "deny", "stickshaker.blocked": true });
+          stepSpan?.setStatus({ code: SpanStatusCode.ERROR });
+          stepSpan?.end();
+          log(`step ${step}: ${toolUse.name} opened a forbidden tab — BLOCKED`);
+          telemetry.push({ step, source: decision.source, kind: "full", inputTokens: decision.inputTokens, outputTokens: decision.outputTokens, latencyMs, observationChars: body.length });
+          prev = cur;
+          prevUrl = cur.url;
+          currentUrl = cur.url;
+          stepsSinceKeyframe = 0;
+          if (consecutiveBlocks >= MAX_CONSECUTIVE_FAILURES) {
+            return ret("failed", `Aborted after ${consecutiveBlocks} consecutive policy-blocked actions. Last: ${deniedReason}`, step);
+          }
+          continue;
+        }
+      }
+
       const navigated = cur.url !== prevUrl;
 
       // Post-action destination enforcement: a click, a form submit, or a page-
@@ -456,6 +493,10 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       log(`step ${step}: ${toolUse.name}${summarizeInput(toolUse.name, input)}   [${srcTag}${kind}, ${body.length} chars]`);
       telemetry.push({ step, source: decision.source, kind, inputTokens: decision.inputTokens, outputTokens: decision.outputTokens, latencyMs, observationChars: body.length });
 
+      // A fully clean step (no pre-action, post-navigation, or popup block) breaks any
+      // block streak. Resetting here — not right after the pre-action gate — is what
+      // lets consecutive post-navigation/popup blocks actually reach the abort guard.
+      consecutiveBlocks = 0;
       prev = cur;
       prevUrl = cur.url;
       currentUrl = cur.url;
@@ -529,19 +570,32 @@ function clampText(text: unknown, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
 }
 
-/** Accept a page-supplied JSON schema only if it's a small object schema; else a generic one. */
+/** Accept a page-supplied JSON schema only if it's a small, well-formed object schema. */
 function sanitizeSchema(schema: unknown): Anthropic.Tool["input_schema"] {
-  if (schema && typeof schema === "object") {
-    const s = schema as Record<string, unknown>;
-    let size = Infinity;
-    try {
-      size = JSON.stringify(s).length;
-    } catch {
-      /* circular / unserializable — fall through to generic */
+  const generic: Anthropic.Tool["input_schema"] = { type: "object", properties: {} };
+  if (!schema || typeof schema !== "object") return generic;
+  const s = schema as Record<string, unknown>;
+  if (s.type !== "object") return generic;
+  // Deep-validate the shapes the Anthropic API is strict about. A malformed schema
+  // (e.g. `properties` that isn't an object, or `required` that isn't a string array)
+  // would 400 the whole messages.create and crash the run — the same page-triggered
+  // DoS that sanitizing the tool name prevents. On any doubt, fall back to generic.
+  if (s.properties !== undefined) {
+    if (typeof s.properties !== "object" || s.properties === null || Array.isArray(s.properties)) return generic;
+    for (const v of Object.values(s.properties as Record<string, unknown>)) {
+      if (!v || typeof v !== "object" || Array.isArray(v)) return generic;
     }
-    if (size <= 4000 && s.type === "object") return s as Anthropic.Tool["input_schema"];
   }
-  return { type: "object", properties: {} };
+  if (s.required !== undefined && (!Array.isArray(s.required) || s.required.some((x) => typeof x !== "string"))) {
+    return generic;
+  }
+  let size = Infinity;
+  try {
+    size = JSON.stringify(s).length;
+  } catch {
+    return generic; // circular / unserializable
+  }
+  return size <= 4000 ? (s as Anthropic.Tool["input_schema"]) : generic;
 }
 
 function summarizeInput(name: string, input: Record<string, unknown>): string {

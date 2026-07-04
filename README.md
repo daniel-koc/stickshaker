@@ -585,8 +585,8 @@ pnpm build           # compile to dist/
 - **The injection suite is young.** 3/3 adversarial patterns are blocked so
   far; more ingestion surfaces (and an attack that targets the enforcing
   half rather than the model) are still to be covered.
-- **One tab at a time.** Popups and new tabs are not driven; there is no
-  multi-tab orchestration.
+- **One tab at a time.** Popups and new tabs are closed and policy-checked,
+  not driven; there is no multi-tab orchestration.
 - **Backends: Claude + Ollama.** An OpenAI-compatible cloud backend would
   slot into the router, but no GPT column exists today.
 

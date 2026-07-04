@@ -79,7 +79,14 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
   // Restore the guardrail policy the original run used (unless overridden), so an
   // interrupted policy-guarded run does not resume unguarded.
   const policyPath = opts.policyPath ?? meta.policyPath;
-  const policy: Policy | undefined = policyPath && existsSync(policyPath) ? loadPolicy(policyPath) : undefined;
+  let policy: Policy | undefined;
+  if (policyPath) {
+    if (existsSync(policyPath)) {
+      policy = loadPolicy(policyPath);
+    } else {
+      opts.onStep?.(`⚠ recorded policy file not found (${policyPath}); resuming WITHOUT guardrails — pass --policy to supply one`);
+    }
+  }
 
   return runAgent({
     task: meta.task,

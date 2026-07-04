@@ -7,7 +7,7 @@ import { costUsd } from "./llm.js";
 import { Recorder, runDirName, type RunMeta } from "./recorder.js";
 import { initTelemetry, trace, context, SpanStatusCode, type Span } from "./telemetry.js";
 import { evaluateAction, evaluateDestination, isGuardedTool, EMPTY_POLICY, type Policy } from "./guardrails.js";
-import { Router, type RouterMode } from "./router.js";
+import { Router, type RouterMode, type Decision } from "./router.js";
 import { ollamaAvailable } from "./ollama.js";
 import type { ActionResult, RunMode, Snapshot, StepTelemetry, Usage } from "./types.js";
 
@@ -174,6 +174,19 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   }
   const maxSteps = Math.min(opts.maxSteps, policy.budgets?.maxSteps ?? Number.POSITIVE_INFINITY);
 
+  // Resolve a destination URL against the policy, running the approval gate for
+  // "approve" verdicts. Returns a denial reason, or undefined if the URL is allowed
+  // (or approved). Used for both the main tab and any popups after an action.
+  const resolveDestination = async (url: string, ctxInput: Record<string, unknown>, toolName: string): Promise<string | undefined> => {
+    const v = evaluateDestination(policy, url, taskOrigin);
+    if (v.effect === "allow") return undefined;
+    if (v.effect === "approve") {
+      if (opts.approve && (await opts.approve({ tool: toolName, input: ctxInput, reason: v.reason }))) return undefined;
+      return `operator did not approve (${v.reason})`;
+    }
+    return v.reason;
+  };
+
   try {
     if (opts.startUrl) {
       log(`navigate → ${opts.startUrl}`);
@@ -239,7 +252,23 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
       const stepSpan: Span | undefined = tel?.tracer.startSpan("stickshaker.step", { attributes: { "stickshaker.step": step } }, rootCtx);
       const t0 = Date.now();
-      const decision = await router.decide(messages, { tools: currentTools, forceCloud: escalateNext });
+      let decision: Decision;
+      try {
+        decision = await router.decide(messages, { tools: currentTools, forceCloud: escalateNext });
+      } catch (e) {
+        // The page-provided tools are the only untrusted part of the request, so if
+        // the API rejects it (400) — e.g. a malformed tool schema that slipped past
+        // sanitizeSchema — retry once
+        // with the built-in tools only. The agent falls back to snapshot+act for this
+        // step instead of a hostile page aborting the whole run.
+        if (pageTools.length && isBadRequest(e)) {
+          recorder?.event("webmcp", { step, note: "API rejected the request; retried without page-provided tools" });
+          log(`step ${step}: API rejected page tools — retrying without them`);
+          decision = await router.decide(messages, { tools, forceCloud: escalateNext });
+        } else {
+          throw e;
+        }
+      }
       escalateNext = false;
       const latencyMs = Date.now() - t0;
 
@@ -379,81 +408,55 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
       cur = await browser.snapshot();
 
-      // Popups / new tabs escape the single-page observation loop entirely. Close any
-      // the action opened and enforce the destination policy on where they pointed —
-      // a target=_blank link to a denied origin must not slip past the guardrail.
+      // Post-action navigation enforcement. An action can move the browser in ways
+      // that bypass the pre-action navigate check: the main tab can navigate (a click
+      // or form submit), and/or the action can open a popup / new tab. Enforce the
+      // destination policy on every one of them — pull the main tab back, close
+      // offending popups — so nothing lands on a denied or unapproved origin.
       {
         const popupUrls = await browser.drainPopups();
-        let deniedReason: string | undefined;
+        const mainDenied = cur.url !== prevUrl && isGuardedTool(toolUse.name)
+          ? await resolveDestination(cur.url, input, toolUse.name)
+          : undefined;
+        let popupDenied: string | undefined;
         for (const u of popupUrls) {
-          const d = evaluateDestination(policy, u, taskOrigin);
-          if (d.effect !== "allow") {
-            deniedReason = d.effect === "deny" ? d.reason : `operator did not approve (${d.reason})`;
-            break;
-          }
+          popupDenied = await resolveDestination(u, { url: u }, toolUse.name);
+          if (popupDenied) break;
         }
-        if (deniedReason) {
+        if (mainDenied || popupDenied) {
+          let recovered = cur;
+          let pulledBack = false;
+          if (mainDenied) {
+            const back = await browser.goBack();
+            pulledBack = back.ok;
+            if (back.ok) recovered = await browser.snapshot();
+          }
           consecutiveBlocks++;
           if (opts.mode === "diff") keyframeGroup++;
-          recorder?.event("guardrail", { step, tool: toolUse.name, effect: "deny", reason: deniedReason, stage: "popup" });
-          const body = `BLOCKED BY POLICY: the action opened a new tab to a disallowed destination (${deniedReason}); it was closed. Do not retry that route; choose a compliant action or call fail.\n\nCurrent page (full snapshot):\n${formatFull(cur)}`;
+          const reasons = [mainDenied && `main tab (${mainDenied})`, popupDenied && `new tab (${popupDenied})`].filter(Boolean).join("; ");
+          recorder?.event("guardrail", { step, tool: toolUse.name, effect: "deny", reason: reasons, stage: "post_navigation", pulledBack, popupsClosed: popupUrls.length });
+          const recoveryNote = mainDenied ? (pulledBack ? " You were returned to the previous page." : " Could not return automatically; you may still be on the blocked page.") : "";
+          const body = `BLOCKED BY POLICY (after navigation): ${reasons}.${recoveryNote} Do not retry this route; choose a compliant action or call fail.\n\nCurrent page (full snapshot):\n${formatFull(recovered)}`;
           addObservation(body, toolUse.id, true);
-          recorder?.event("observation", { step, kind: "full", url: cur.url, title: cur.title, chars: body.length, body });
+          recorder?.event("observation", { step, kind: "full", url: recovered.url, title: recovered.title, chars: body.length, body });
           await recorder?.screenshot(browser.page, step);
           stepSpan?.setAttributes({ "stickshaker.guardrail": "deny", "stickshaker.blocked": true });
           stepSpan?.setStatus({ code: SpanStatusCode.ERROR });
           stepSpan?.end();
-          log(`step ${step}: ${toolUse.name} opened a forbidden tab — BLOCKED`);
+          log(`step ${step}: ${toolUse.name} navigation BLOCKED (${reasons})`);
           telemetry.push({ step, source: decision.source, kind: "full", inputTokens: decision.inputTokens, outputTokens: decision.outputTokens, latencyMs, observationChars: body.length });
-          prev = cur;
-          prevUrl = cur.url;
-          currentUrl = cur.url;
+          prev = recovered;
+          prevUrl = recovered.url;
+          currentUrl = recovered.url;
           stepsSinceKeyframe = 0;
           if (consecutiveBlocks >= MAX_CONSECUTIVE_FAILURES) {
-            return ret("failed", `Aborted after ${consecutiveBlocks} consecutive policy-blocked actions. Last: ${deniedReason}`, step);
+            return ret("failed", `Aborted after ${consecutiveBlocks} consecutive policy-blocked actions. Last: ${reasons}`, step);
           }
           continue;
         }
       }
 
       const navigated = cur.url !== prevUrl;
-
-      // Post-action destination enforcement: a click, a form submit, or a page-
-      // provided tool can navigate to a denied or cross-origin page without going
-      // through the navigate tool. Check where we actually landed and pull back out.
-      if (navigated && isGuardedTool(toolUse.name)) {
-        const dest = evaluateDestination(policy, cur.url, taskOrigin);
-        if (dest.effect !== "allow") {
-          const approved = dest.effect === "approve" && opts.approve
-            ? await opts.approve({ tool: toolUse.name, input, reason: dest.reason })
-            : false;
-          if (!approved) {
-            const back = await browser.goBack();
-            const recovered = back.ok ? await browser.snapshot() : cur;
-            consecutiveBlocks++;
-            if (opts.mode === "diff") keyframeGroup++;
-            const why = dest.effect === "deny" ? dest.reason : `operator did not approve (${dest.reason})`;
-            recorder?.event("guardrail", { step, tool: toolUse.name, effect: dest.effect, reason: dest.reason, stage: "post_navigation", pulledBack: back.ok });
-            const body = `BLOCKED BY POLICY (after navigation): ${why}. ${back.ok ? "You were returned to the previous page." : "Could not return automatically."} Do not retry this route; choose a compliant action or call fail.\n\nCurrent page (full snapshot):\n${formatFull(recovered)}`;
-            addObservation(body, toolUse.id, true);
-            recorder?.event("observation", { step, kind: "full", url: recovered.url, title: recovered.title, chars: body.length, body });
-            await recorder?.screenshot(browser.page, step);
-            stepSpan?.setAttributes({ "stickshaker.guardrail": dest.effect, "stickshaker.blocked": true });
-            stepSpan?.setStatus({ code: SpanStatusCode.ERROR });
-            stepSpan?.end();
-            log(`step ${step}: ${toolUse.name} landed on a forbidden page — BLOCKED (${dest.effect})`);
-            telemetry.push({ step, source: decision.source, kind: "full", inputTokens: decision.inputTokens, outputTokens: decision.outputTokens, latencyMs, observationChars: body.length });
-            prev = recovered;
-            prevUrl = recovered.url;
-            currentUrl = recovered.url;
-            stepsSinceKeyframe = 0;
-            if (consecutiveBlocks >= MAX_CONSECUTIVE_FAILURES) {
-              return ret("failed", `Aborted after ${consecutiveBlocks} consecutive policy-blocked actions. Last: ${why}`, step);
-            }
-            continue;
-          }
-        }
-      }
 
       // A same-URL document replacement (reload, POST result, meta refresh) yields a
       // fresh doc token; force a keyframe so we don't diff a new document against the
@@ -557,6 +560,11 @@ async function execAction(
     default:
       return { ok: false, detail: `unknown tool: ${name}` };
   }
+}
+
+/** True for an HTTP 400 from the Anthropic API (e.g. a rejected tool schema). */
+function isBadRequest(e: unknown): boolean {
+  return (e as { status?: number } | null)?.status === 400;
 }
 
 /** Coerce a page-supplied tool name into the Anthropic grammar (`^[a-zA-Z0-9_-]{1,64}$`). */

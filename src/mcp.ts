@@ -35,10 +35,21 @@ async function pageToolsSuffix(interactive: Interactive): Promise<string> {
  * on this path, so an approval-required destination is treated as blocked.
  */
 async function enforceDestination(interactive: Interactive, policy: Policy) {
+  // Close any popups/new tabs the action opened and enforce policy on where they
+  // pointed (the agent only drives the main tab, so a popup is either an escape hatch
+  // or dead weight — either way it is closed here).
+  for (const u of await interactive.drainPopups()) {
+    const pd = evaluateDestination(policy, u, interactive.taskOrigin);
+    if (pd.effect !== "allow") {
+      const snap = await interactive.snapshot();
+      return textResult(`BLOCKED BY POLICY: the action opened a new tab to a disallowed destination (${pd.reason}); it was closed.\n\n${formatFull(snap)}`, true);
+    }
+  }
   const dest = evaluateDestination(policy, interactive.currentUrl(), interactive.taskOrigin);
   if (dest.effect === "allow") return null;
-  const back = await interactive.goBackSnapshot();
-  return textResult(`BLOCKED BY POLICY (after navigation): ${dest.reason}. Returned to the previous page.\n\n${formatFull(back)}`, true);
+  const { snapshot, ok } = await interactive.goBackSnapshot();
+  const recovery = ok ? "Returned to the previous page." : "Could not return automatically; you may still be on the blocked page.";
+  return textResult(`BLOCKED BY POLICY (after navigation): ${dest.reason}. ${recovery}\n\n${formatFull(snapshot)}`, true);
 }
 
 /** One interactive browser session shared across snapshot/act/recall calls. */
@@ -147,12 +158,18 @@ class Interactive {
     return { result, snapshot: s };
   }
 
-  async goBackSnapshot(): Promise<Snapshot> {
+  async goBackSnapshot(): Promise<{ snapshot: Snapshot; ok: boolean }> {
     const b = await this.ensure();
-    await b.goBack();
+    const back = await b.goBack();
     const s = await b.snapshot();
     await this.record(s);
-    return s;
+    return { snapshot: s, ok: back.ok };
+  }
+
+  /** Close any popups/new tabs opened since the last drain and return their URLs. */
+  async drainPopups(): Promise<string[]> {
+    if (!this.session) return [];
+    return this.session.drainPopups();
   }
 
   async recall(query: string, limit = 3): Promise<string> {
@@ -175,6 +192,7 @@ class Interactive {
 /** Build the Stickshaker MCP server. Reused by the CLI and by the test harness. */
 export function buildServer(opts: {
   policy?: Policy | undefined;
+  policyPath?: string | undefined;
   traceDir?: string | undefined;
   ollamaUrl?: string | undefined;
   embedModel?: string | undefined;
@@ -212,6 +230,7 @@ export function buildServer(opts: {
         keyframeInterval: 5,
         headless: true,
         policy,
+        ...(opts.policyPath ? { policyPath: opts.policyPath } : {}),
         ...(opts.traceDir ? { traceDir: opts.traceDir } : {}),
       });
       const header = `status: ${result.status}   steps: ${result.steps}   cost: $${result.costUsd.toFixed(4)}${result.runDir ? `\ntrace: ${result.runDir}` : ""}`;
@@ -339,6 +358,7 @@ export function buildServer(opts: {
 
 export async function startStdioServer(opts: {
   policy?: Policy | undefined;
+  policyPath?: string | undefined;
   traceDir?: string | undefined;
   ollamaUrl?: string | undefined;
   embedModel?: string | undefined;

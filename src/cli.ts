@@ -200,7 +200,7 @@ program
   .option("--embed-model <name>", "Ollama embedding model for recall", "nomic-embed-text")
   .action(async (opts: { policy?: string; traceDir: string; ollamaUrl: string; embedModel: string }) => {
     await startStdioServer({
-      ...(opts.policy ? { policy: loadPolicy(opts.policy) } : {}),
+      ...(opts.policy ? { policy: loadPolicy(opts.policy), policyPath: opts.policy } : {}),
       traceDir: opts.traceDir,
       ollamaUrl: opts.ollamaUrl,
       embedModel: opts.embedModel,

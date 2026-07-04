@@ -265,9 +265,13 @@ export class BrowserSession {
   }
 
   async goBack(): Promise<ActionResult> {
+    const before = this.page.url();
     try {
       await this.page.goBack({ waitUntil: "domcontentloaded", timeout: 15000 });
       await this.settle();
+      // page.goBack resolves to null (no throw) when there is no history entry; the
+      // URL is unchanged in that case, so report it honestly rather than "navigated".
+      if (this.page.url() === before) return { ok: false, detail: "no previous page to return to" };
       return { ok: true, detail: "navigated back" };
     } catch (e) {
       return { ok: false, detail: `go_back failed: ${errMsg(e)}` };

@@ -1,21 +1,24 @@
 # Stickshaker
 
 **A systems-grade browser-agent runtime — an LLM drives a real Chromium
-browser, built to be reliable, cheap, and debuggable.**
+browser, cheaply, observably, and behind guardrails it can't talk its way
+past.**
 
-It runs as a **CLI**: point it at a URL with a natural-language task
-and it drives the browser one tool call per turn.
+It runs as a **CLI** (one-shot tasks, evals, benchmarks) and as an **MCP
+server** that gives any MCP-enabled client (Claude Code, Claude Desktop,
+Cursor, …) a policy-guarded browser via the
+[Model Context Protocol](https://modelcontextprotocol.io).
 
-> **Status: flight recorder + observability.** On top of the earlier layers
-> (CLI + Playwright loop + Claude tool-use agent + incremental snapshot
-> **diffing**), every run is now recorded as a replayable **flight-recorder**
-> trace: an append-only JSONL log, a screenshot per step, OpenTelemetry spans,
-> and a `run.json` checkpoint. `stickshaker view` bakes a run into a single
-> self-contained HTML report for offline debugging, `stickshaker resume`
-> restarts an interrupted run from its checkpoint, and a failed action forces a
-> fresh re-snapshot so the agent re-grounds. Still ahead: multi-agent
-> orchestration, local-model routing, prompt-injection defense, and the full
-> eval matrix.
+> **Status: MCP server + guardrails.** On top of the earlier layers (CLI +
+> Playwright loop + Claude tool-use agent + incremental snapshot **diffing** +
+> replayable **flight-recorder** traces), Stickshaker is now an authored **MCP
+> server** that a Claude client can drive, and every action passes through a
+> declarative **guardrail** engine — domain allow/deny, origin scoping,
+> human-in-the-loop approval, and step/cost budgets — enforced in code the
+> model cannot talk its way past. Page text is provenance-labeled as untrusted,
+> the first line of prompt-injection defense. Still ahead: local-model routing,
+> multi-agent orchestration, adversarial injection evals, and the full
+> benchmark matrix.
 
 ---
 
@@ -29,6 +32,10 @@ those is a systems mistake, and each has a systems fix here:
   keyframe/delta observations + history elision keep the per-call context
   flat instead of growing with every step — **22.9% fewer input tokens** on a
   sample task, and the gap widens with task length.
+- **The model is not a security boundary.** Every action passes a declarative
+  policy engine *before* it runs, enforcement lands on where the browser
+  actually **goes** (a click that navigates to a denied origin is caught and
+  reversed), and all page-controlled bytes are fenced or labeled untrusted.
 - **Replayable traces beat verbose logs.** Every run is an append-only JSONL
   trace + a screenshot per step + OpenTelemetry spans, baked into a single
   offline HTML report. Interrupted runs are detectable and resumable.
@@ -39,7 +46,8 @@ those is a systems mistake, and each has a systems fix here:
 
 | Command | What it does |
 |---------|--------------|
-| `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); traces to `.stickshaker/traces/`. |
+| `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails. |
+| `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
 | `stickshaker resume <run-dir>` | Continue an interrupted run from its trace. |
@@ -49,6 +57,24 @@ In a clone, run these as `pnpm stickshaker …` (tsx, no build step) or
 `node dist/cli.js …` after `pnpm build`. `run` and `bench` default to
 `--model claude-opus-4-8`; pass e.g. `--model claude-sonnet-5` to run cheaper.
 Every run prints per-run **token and cost** accounting at the end.
+
+## MCP tools
+
+| Tool | What it does |
+|------|--------------|
+| `browse_task(task, url?, mode?, max_steps?)` | Run the autonomous agent on a natural-language task and return its answer. Self-contained: opens its own browser, records a trace, closes. |
+| `snapshot(url?)` | Interactive elements (each with a `[ref]`) + visible text of the shared session's current page; optionally navigate first. |
+| `act(tool, ref?, …)` | One action in the shared session — `navigate`, `click`, `type`, `select_option`, `scroll`, or `go_back` — then the resulting snapshot. |
+| `recall(query)` | Keyword-search the text of pages visited in this session. |
+| `get_trace(run_dir)` | Read a recorded run's trace summary (confined to the trace directory). |
+
+`snapshot`, `act`, and `recall` share one browser session per server,
+launched lazily on first use; `browse_task` always opens (and closes) its
+own. The same guardrail policy applies to every tool call — pass
+`--policy <file>` to `stickshaker mcp`; actions the policy marks as needing
+approval are refused, since there is no operator prompt over MCP. Other
+server flags: `--trace-dir` (default `.stickshaker/traces`, relative to the server's
+working directory — see [Quick Start](#3-the-launch-command)).
 
 ---
 
@@ -68,6 +94,7 @@ git clone https://github.com/daniel-koc/stickshaker
 cd stickshaker
 pnpm install
 pnpm exec playwright install chromium   # one-time browser download
+pnpm build                              # produces dist/ (needed for the MCP server)
 
 # Try the browser layer with no API key:
 pnpm stickshaker snapshot --url https://example.com
@@ -77,10 +104,244 @@ cp .env.example .env    # then edit .env to add ANTHROPIC_API_KEY
 pnpm stickshaker run "What is the top headline?" --url https://news.ycombinator.com
 ```
 
+### 3. The launch command
+
+Clients start the server over stdio with:
+
+```
+node /path/to/stickshaker/dist/cli.js mcp
+```
+
+Use the absolute path of your clone (on Windows, forward slashes work:
+`C:/path/to/stickshaker/dist/cli.js`). Append
+`--policy /path/to/stickshaker/stickshaker.policy.example.yaml` to apply a
+guardrail policy to every tool call. `ANTHROPIC_API_KEY` is only needed for
+`browse_task`; the other tools work without it.
+
+Traces default to a `.stickshaker/traces/` directory resolved against the
+**working directory the client starts the server in**, which varies by
+client — pass an absolute path like `--trace-dir /path/to/stickshaker/traces`
+to keep `browse_task` traces in one place no matter which client launches it.
+
+### 4. Configure your client
+
+<details open>
+<summary><b>Claude Code (CLI)</b></summary>
+
+Add the server with `claude mcp add` (user scope makes it available in every
+project):
+
+```bash
+claude mcp add --scope user -e ANTHROPIC_API_KEY=sk-ant-... stickshaker -- \
+  node /path/to/stickshaker/dist/cli.js mcp
+```
+
+Or create a `.mcp.json` in a project directory:
+
+```json
+{
+  "mcpServers": {
+    "stickshaker": {
+      "command": "node",
+      "args": ["/path/to/stickshaker/dist/cli.js", "mcp"],
+      "env": { "ANTHROPIC_API_KEY": "sk-ant-..." }
+    }
+  }
+}
+```
+
+**Verify:** run `/mcp` inside Claude Code — `stickshaker` should be listed.
+</details>
+
+<details>
+<summary><b>Claude Desktop</b></summary>
+
+Open **Settings → Developer → Edit Config** (this opens
+`claude_desktop_config.json`) and add:
+
+```json
+{
+  "mcpServers": {
+    "stickshaker": {
+      "command": "node",
+      "args": ["/path/to/stickshaker/dist/cli.js", "mcp"],
+      "env": { "ANTHROPIC_API_KEY": "sk-ant-..." }
+    }
+  }
+}
+```
+
+**Verify:** fully quit Claude Desktop (**File → Exit**, not just close) and
+reopen it. The tools appear under the hammer/tools icon.
+</details>
+
+<details>
+<summary><b>Cursor (IDE)</b></summary>
+
+Open **Cursor Settings → MCP & Integrations → New MCP Server**, or edit the
+config file directly:
+
+- Global (all projects): `~/.cursor/mcp.json`
+- Project-only: `.cursor/mcp.json` in the project root
+
+```json
+{
+  "mcpServers": {
+    "stickshaker": {
+      "command": "node",
+      "args": ["/path/to/stickshaker/dist/cli.js", "mcp"],
+      "env": { "ANTHROPIC_API_KEY": "sk-ant-..." }
+    }
+  }
+}
+```
+
+**Verify:** the server and its tools show up (and can be toggled) in
+**Settings → MCP & Integrations**.
+</details>
+
+<details>
+<summary><b>Cursor CLI (<code>cursor-agent</code>)</b></summary>
+
+The Cursor CLI reads the **same** MCP configuration as the IDE — global
+`~/.cursor/mcp.json` and project `.cursor/mcp.json` — so the JSON above
+applies here too.
+
+**Verify:** run `/mcp` inside `cursor-agent` to confirm `stickshaker` is
+connected.
+</details>
+
+<details>
+<summary><b>VS Code (GitHub Copilot)</b></summary>
+
+Run **MCP: Add Server** from the Command Palette and pick **Command (stdio)**,
+or create `.vscode/mcp.json` in your workspace. Note VS Code uses the
+`servers` key and a `type`:
+
+```json
+{
+  "servers": {
+    "stickshaker": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/path/to/stickshaker/dist/cli.js", "mcp"],
+      "env": { "ANTHROPIC_API_KEY": "sk-ant-..." }
+    }
+  }
+}
+```
+
+**Verify:** open Chat in **Agent** mode and check the tools button.
+</details>
+
+<details>
+<summary><b>Codex (CLI and app)</b></summary>
+
+Add to `~/.codex/config.toml` (create it if it doesn't exist):
+
+```toml
+[mcp_servers.stickshaker]
+command = "node"
+args = ["/path/to/stickshaker/dist/cli.js", "mcp"]
+env = { ANTHROPIC_API_KEY = "sk-ant-..." }
+```
+
+**Verify:** run `/mcp` in Codex.
+</details>
+
+<details>
+<summary><b>Gemini CLI</b></summary>
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "stickshaker": {
+      "command": "node",
+      "args": ["/path/to/stickshaker/dist/cli.js", "mcp"],
+      "env": { "ANTHROPIC_API_KEY": "sk-ant-..." }
+    }
+  }
+}
+```
+
+**Verify:** run `/mcp` in Gemini CLI.
+</details>
+
+<details>
+<summary><b>Windsurf</b></summary>
+
+Open **Settings → Cascade → MCP Servers** (use *View raw config*), or edit
+`~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "stickshaker": {
+      "command": "node",
+      "args": ["/path/to/stickshaker/dist/cli.js", "mcp"],
+      "env": { "ANTHROPIC_API_KEY": "sk-ant-..." }
+    }
+  }
+}
+```
+
+**Verify:** the server appears in the Cascade MCP panel.
+</details>
+
+<details>
+<summary><b>Cline / Roo Code (VS Code extensions)</b></summary>
+
+Open the extension's **MCP Servers → Configure** view (it opens a
+`*_mcp_settings.json`) and add the same `mcpServers` JSON as above.
+
+**Verify:** the server shows as connected in the extension's MCP panel.
+</details>
+
+<details>
+<summary><b>JetBrains (Junie / AI Assistant)</b></summary>
+
+- **Junie:** edit `~/.junie/mcp/mcp.json` (global) or
+  `<project>/.junie/mcp/mcp.json`.
+- **AI Assistant:** **Settings → Tools → AI Assistant → Model Context
+  Protocol (MCP)**.
+
+Both use the same `mcpServers` entry shown above.
+</details>
+
+<details>
+<summary><b>Any other MCP client</b></summary>
+
+Most MCP clients accept a stdio launch command. Add a new server with:
+
+- **command:** `node`
+- **args:** `/path/to/stickshaker/dist/cli.js mcp`
+- **env:** `ANTHROPIC_API_KEY` (only needed for `browse_task`)
+
+If the client uses a config file it is almost always the `mcpServers` JSON
+shown above (Codex uses TOML; VS Code uses `servers` with
+`"type": "stdio"`). See your client's MCP documentation for the exact file
+location.
+</details>
 
 ---
 
 ## Examples
+
+Once connected over MCP, ask your agent things like — each line exercises a
+tool:
+
+- *"Browse to news.ycombinator.com and report the top headline."*
+  → `browse_task`
+- *"Open example.com — what can I interact with on this page?"* → `snapshot`
+- *"Click ref 5 and tell me what changed."* → `act`
+- *"Fill the search box (ref 2) with 'playwright' and submit."* → `act`
+- *"What did the pricing page we visited earlier say about the free tier?"*
+  → `recall`
+- *"Summarize what the agent did in `.stickshaker/traces/<run-dir>`."* → `get_trace`
+
+From the CLI:
 
 ```bash
 # One-shot task, traced to .stickshaker/traces/
@@ -89,6 +350,10 @@ pnpm stickshaker run "What is the top headline?" --url https://news.ycombinator.
 # Watch the browser work; iterate on a cheaper model; allow a longer task
 pnpm stickshaker run "Find the contact email" --url https://example.com \
   --headed --model claude-sonnet-5 --max-steps 40
+
+# Guardrails: domain policy + human-in-the-loop approval
+pnpm stickshaker run "Read the docs and summarize" --url https://example.com \
+  --policy stickshaker.policy.example.yaml --approve prompt
 
 # Replay a run offline; resume an interrupted one
 pnpm stickshaker view .stickshaker/traces/<run-dir>
@@ -124,9 +389,10 @@ full-snapshot baseline for benchmarking.
 
 ## Flight recorder
 
-Tracing is on by default for CLI `run` (`--no-trace` to disable) and
-`resume`, and off for the measurement command (`bench`). Every traced run
-writes a directory under `.stickshaker/traces/`:
+Tracing is on by default for the autonomous-agent paths — CLI `run`
+(`--no-trace` to disable), `resume`, and the MCP `browse_task` tool — and off
+for the measurement command (`bench`) and the step-by-step MCP
+`snapshot`/`act` session. Every traced run writes a directory under `.stickshaker/traces/`:
 ```
 .stickshaker/traces/<timestamp>_<task-slug>/
   trace.jsonl        append-only event log: LLM I/O, actions, results, observations, timings
@@ -143,6 +409,37 @@ interrupted run is detectable, and `stickshaker resume <run-dir>` restarts it:
 it restores the last page URL, hands the model a summary of the actions it
 already took, and continues (recording a fresh linked trace).
 
+## Guardrails & injection defense
+
+Every browser-affecting action is checked against a declarative YAML policy
+**before it runs**, in ordinary code the model cannot influence. A prompt
+injection can fool the model into *proposing* a forbidden action, but it cannot
+edit the policy that refuses it. Without `--policy`, everything is allowed. See
+[`stickshaker.policy.example.yaml`](stickshaker.policy.example.yaml):
+
+```yaml
+domains:
+  allow: []                 # if non-empty, only these host globs are permitted
+  deny: ["accounts.google.com", "*.facebook.com"]
+sameOriginOnly: false       # true: leaving the task's origin requires approval
+requireApproval: []         # tool names needing human-in-the-loop approval
+block: []                   # tool names always blocked
+budgets: { maxSteps: 30, maxCostUsd: 1.00 }
+```
+
+- **Blocked** actions are refused with a reason the model sees; it must choose
+  a compliant alternative (or fail). Repeated blocked attempts abort the run.
+- **Approval** decisions invoke the `--approve` gate: `prompt` (the default)
+  asks the operator on the terminal, `deny` refuses, `auto` allows.
+- **Provenance labeling**: page text is wrapped as explicitly untrusted
+  content, so an instruction hidden in a page reads to the model as data, not a
+  command. This is the model-facing half; the policy engine is the enforcing
+  half.
+
+```bash
+stickshaker run "Read the docs and summarize" --url https://example.com --policy stickshaker.policy.example.yaml --approve prompt
+```
+
 ---
 
 ## Benchmarks
@@ -154,14 +451,30 @@ Every claim reproduces with one command — see
 |-------|----------|
 | Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
 
+---
+
+## Configuration
+
+Environment variables (set in your shell, in a `.env` file, or in the
+`"env"` block of your MCP client config — note `.env` is loaded from the
+working directory, so for MCP clients the `"env"` block is the reliable
+place):
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `ANTHROPIC_API_KEY` | Claude access for `run`/`resume`/`bench` and the MCP `browse_task` tool | — (keyless: `snapshot`, `view`) |
+| `STICKSHAKER_MODEL` | Model used by the MCP `browse_task` tool | `claude-opus-4-8` |
+
 ## Layout
 
 | File | Role |
 |---|---|
-| `src/cli.ts` | Command-line entry (`run`, `resume`, `view`, `bench`, `snapshot`) |
+| `src/cli.ts` | Command-line entry (`run`, `mcp`, `resume`, `view`, `bench`, `snapshot`) |
 | `src/agent.ts` | The agent loop: tool-use loop, keyframe/delta decisions, history elision, failure recovery, recording |
 | `src/browser.ts` | Playwright wrapper: launch, stable-ref snapshot, actions |
-| `src/observe.ts` | Snapshot diffing and observation rendering (full + delta) |
+| `src/observe.ts` | Snapshot diffing, observation rendering, provenance labeling |
+| `src/guardrails.ts` | Declarative policy engine (domains, origin scoping, budgets) |
+| `src/mcp.ts` | MCP server exposing the runtime as tools |
 | `src/recorder.ts` | Flight recorder: JSONL trace, screenshots, `run.json` checkpoint |
 | `src/telemetry.ts` | OpenTelemetry spans exported to a JSONL file |
 | `src/view.ts` | Self-contained HTML report generator |

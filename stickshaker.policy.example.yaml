@@ -1,0 +1,25 @@
+# Example Stickshaker guardrail policy. Pass with:  stickshaker run "…" --policy stickshaker.policy.example.yaml
+# All fields are optional; an empty file means "allow everything".
+
+domains:
+  # If `allow` is non-empty, ONLY these host globs are permitted.
+  allow: []
+  # These host globs are always blocked, even if allowed above.
+  deny:
+    - "*.facebook.com"
+    - "accounts.google.com"
+
+# If true, actions that leave the task's starting origin require approval (see --approve).
+sameOriginOnly: false
+
+# Tool names that require human-in-the-loop approval before they run.
+requireApproval: []
+# e.g. require a human to confirm every navigation:
+#   requireApproval: ["navigate"]
+
+# Tool names that are always blocked.
+block: []
+
+budgets:
+  maxSteps: 30
+  maxCostUsd: 1.00

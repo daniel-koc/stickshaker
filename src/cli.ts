@@ -1,10 +1,13 @@
 #!/usr/bin/env node
+import { createInterface } from "node:readline/promises";
 import { Command, InvalidArgumentError } from "commander";
 import { BrowserSession } from "./browser.js";
 import { formatFull } from "./observe.js";
-import { runAgent, type AgentResult } from "./agent.js";
+import { runAgent, type AgentResult, type ApproveFn } from "./agent.js";
 import { generateReport } from "./view.js";
 import { resumeRun } from "./resume.js";
+import { loadPolicy } from "./guardrails.js";
+import { startStdioServer } from "./mcp.js";
 import type { RunMode } from "./types.js";
 
 // Load a local .env if present (Node >= 20.6). No dependency needed.
@@ -30,6 +33,33 @@ function parsePositiveInt(value: string): number {
 function parseMode(value: string): RunMode {
   if (value !== "full" && value !== "diff") throw new InvalidArgumentError("mode must be 'full' or 'diff'");
   return value;
+}
+
+type ApproveMode = "auto" | "prompt" | "deny";
+function parseApproveMode(value: string): ApproveMode {
+  if (value !== "auto" && value !== "prompt" && value !== "deny") {
+    throw new InvalidArgumentError("approve must be 'auto', 'prompt', or 'deny'");
+  }
+  return value;
+}
+
+/** Build the human-in-the-loop gate for policy actions that require approval. */
+function makeApprover(mode: ApproveMode): ApproveFn {
+  if (mode === "auto") return async () => true;
+  if (mode === "deny") return async () => false;
+  return async (req) => {
+    if (!process.stdin.isTTY) {
+      console.error(`  (no TTY — auto-denying ${req.tool}: ${req.reason})`);
+      return false;
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    try {
+      const answer = (await rl.question(`  approve ${req.tool} ${JSON.stringify(req.input)} — ${req.reason}? [y/N] `)).trim().toLowerCase();
+      return answer === "y" || answer === "yes";
+    } finally {
+      rl.close();
+    }
+  };
 }
 
 function reportSummary(result: AgentResult): void {
@@ -61,6 +91,8 @@ program
   .option("--mode <mode>", "observation mode: diff (incremental) or full (baseline)", parseMode, "diff")
   .option("--max-steps <n>", "maximum agent steps", parsePositiveInt, 25)
   .option("--keyframe-interval <n>", "diff mode: force a full snapshot every N steps", parsePositiveInt, 5)
+  .option("--policy <file>", "guardrail policy YAML file")
+  .option("--approve <mode>", "how to handle actions needing approval: auto | prompt | deny", parseApproveMode, "prompt")
   .option("--trace-dir <dir>", "directory for run traces", ".stickshaker/traces")
   .option("--no-trace", "disable trace recording")
   .option("--headed", "show the browser window instead of running headless", false)
@@ -70,12 +102,14 @@ program
     mode: RunMode;
     maxSteps: number;
     keyframeInterval: number;
+    policy?: string;
+    approve: ApproveMode;
     traceDir: string;
     trace: boolean;
     headed: boolean;
   }) => {
     requireKey();
-    console.error(`▶ task: ${task}   [mode: ${opts.mode}, model: ${opts.model}]`);
+    console.error(`▶ task: ${task}   [mode: ${opts.mode}, model: ${opts.model}${opts.policy ? ", policy: " + opts.policy : ""}]`);
     const result = await runAgent({
       task,
       startUrl: opts.url,
@@ -85,6 +119,8 @@ program
       keyframeInterval: opts.keyframeInterval,
       headless: !opts.headed,
       traceDir: opts.trace ? opts.traceDir : undefined,
+      ...(opts.policy ? { policy: loadPolicy(opts.policy) } : {}),
+      approve: makeApprover(opts.approve),
       onStep: (line) => console.error("  " + line),
     });
     reportSummary(result);
@@ -122,6 +158,19 @@ program
   .action((runDir: string) => {
     const report = generateReport(runDir);
     console.log(report);
+  });
+
+program
+  .command("mcp")
+  .description("Start the Stickshaker MCP server on stdio (for Claude Desktop / Claude Code).")
+  .option("--policy <file>", "guardrail policy YAML file applied to all tool actions")
+  .option("--trace-dir <dir>", "directory for browse_task traces", ".stickshaker/traces")
+  .action(async (opts: { policy?: string; traceDir: string }) => {
+    await startStdioServer({
+      ...(opts.policy ? { policy: loadPolicy(opts.policy) } : {}),
+      traceDir: opts.traceDir,
+    });
+    // Stays alive on stdin; the transport keeps the event loop running.
   });
 
 program

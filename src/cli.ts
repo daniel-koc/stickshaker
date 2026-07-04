@@ -3,6 +3,8 @@ import { Command, InvalidArgumentError } from "commander";
 import { BrowserSession } from "./browser.js";
 import { formatFull } from "./observe.js";
 import { runAgent, type AgentResult } from "./agent.js";
+import { generateReport } from "./view.js";
+import { resumeRun } from "./resume.js";
 import type { RunMode } from "./types.js";
 
 // Load a local .env if present (Node >= 20.6). No dependency needed.
@@ -30,6 +32,20 @@ function parseMode(value: string): RunMode {
   return value;
 }
 
+function reportSummary(result: AgentResult): void {
+  console.error("");
+  console.error(`● status: ${result.status}   steps: ${result.steps}`);
+  console.error(
+    `● tokens: in ${result.usage.inputTokens} / out ${result.usage.outputTokens}   ≈ $${result.costUsd.toFixed(4)}`,
+  );
+  if (result.runDir) {
+    const report = generateReport(result.runDir);
+    console.error(`● trace: ${result.runDir}`);
+    console.error(`● report: ${report}`);
+  }
+  console.error("");
+}
+
 const program = new Command();
 program
   .name("stickshaker")
@@ -45,6 +61,8 @@ program
   .option("--mode <mode>", "observation mode: diff (incremental) or full (baseline)", parseMode, "diff")
   .option("--max-steps <n>", "maximum agent steps", parsePositiveInt, 25)
   .option("--keyframe-interval <n>", "diff mode: force a full snapshot every N steps", parsePositiveInt, 5)
+  .option("--trace-dir <dir>", "directory for run traces", ".stickshaker/traces")
+  .option("--no-trace", "disable trace recording")
   .option("--headed", "show the browser window instead of running headless", false)
   .action(async (task: string, opts: {
     url?: string;
@@ -52,6 +70,8 @@ program
     mode: RunMode;
     maxSteps: number;
     keyframeInterval: number;
+    traceDir: string;
+    trace: boolean;
     headed: boolean;
   }) => {
     requireKey();
@@ -64,18 +84,44 @@ program
       maxSteps: opts.maxSteps,
       keyframeInterval: opts.keyframeInterval,
       headless: !opts.headed,
+      traceDir: opts.trace ? opts.traceDir : undefined,
       onStep: (line) => console.error("  " + line),
     });
-
-    console.error("");
-    console.error(`● status: ${result.status}   steps: ${result.steps}`);
-    console.error(
-      `● tokens: in ${result.usage.inputTokens} / out ${result.usage.outputTokens}   ≈ $${result.costUsd.toFixed(4)}`,
-    );
-    console.error("");
-    // The answer goes to stdout so it is pipeable; progress/telemetry go to stderr.
+    reportSummary(result);
     console.log(result.message);
     process.exit(result.status === "failed" ? 2 : 0);
+  });
+
+program
+  .command("resume")
+  .description("Resume an interrupted run from its trace directory.")
+  .argument("<run-dir>", "a run directory produced by a previous run")
+  .option("--max-steps <n>", "maximum additional steps", parsePositiveInt, 25)
+  .option("--keyframe-interval <n>", "diff mode: force a full snapshot every N steps", parsePositiveInt, 5)
+  .option("--trace-dir <dir>", "directory for the resumed run's trace", ".stickshaker/traces")
+  .option("--headed", "show the browser window", false)
+  .action(async (runDir: string, opts: { maxSteps: number; keyframeInterval: number; traceDir: string; headed: boolean }) => {
+    requireKey();
+    console.error(`▶ resuming: ${runDir}`);
+    const result = await resumeRun(runDir, {
+      maxSteps: opts.maxSteps,
+      keyframeInterval: opts.keyframeInterval,
+      headless: !opts.headed,
+      traceDir: opts.traceDir,
+      onStep: (line) => console.error("  " + line),
+    });
+    reportSummary(result);
+    console.log(result.message);
+    process.exit(result.status === "failed" ? 2 : 0);
+  });
+
+program
+  .command("view")
+  .description("Generate a self-contained HTML report from a run's trace. No API key needed.")
+  .argument("<run-dir>", "a run directory produced by a previous run")
+  .action((runDir: string) => {
+    const report = generateReport(runDir);
+    console.log(report);
   });
 
 program
@@ -86,12 +132,7 @@ program
   .option("--model <model>", "Claude model id", "claude-opus-4-8")
   .option("--max-steps <n>", "maximum agent steps", parsePositiveInt, 20)
   .option("--keyframe-interval <n>", "diff mode: force a full snapshot every N steps", parsePositiveInt, 5)
-  .action(async (task: string, opts: {
-    url: string;
-    model: string;
-    maxSteps: number;
-    keyframeInterval: number;
-  }) => {
+  .action(async (task: string, opts: { url: string; model: string; maxSteps: number; keyframeInterval: number }) => {
     requireKey();
     const results: AgentResult[] = [];
     for (const mode of ["full", "diff"] as const) {
@@ -126,8 +167,6 @@ program
       console.log("");
       console.log(`diff vs full: ${reduction.toFixed(1)}% fewer input tokens, ${costReduction.toFixed(1)}% lower cost.`);
     }
-    // Diff mode only diverges from full once it sends a delta. If it never did,
-    // the two runs sent identical observations and the comparison is meaningless.
     if (deltaSteps(diff) === 0) {
       console.log("");
       console.log("⚠ diff mode sent 0 deltas: every step was a keyframe (first step, or a");

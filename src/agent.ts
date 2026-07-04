@@ -302,7 +302,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
             stepSpan?.setStatus({ code: SpanStatusCode.ERROR });
             stepSpan?.end();
             log(`step ${step}: ${toolUse.name} BLOCKED (${gate.effect})`);
-            telemetry.push({ step, source: decision.source, kind: "full", inputTokens: decision.inputTokens, outputTokens: decision.outputTokens, observationChars: body.length });
+            telemetry.push({ step, source: decision.source, kind: "full", inputTokens: decision.inputTokens, outputTokens: decision.outputTokens, latencyMs, observationChars: body.length });
             if (consecutiveBlocks >= MAX_CONSECUTIVE_FAILURES) {
               return ret("failed", `Aborted after ${consecutiveBlocks} consecutive policy-blocked actions. Last: ${why}`, step);
             }
@@ -361,7 +361,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
       const srcTag = routerMode === "cloud" ? "" : `${decision.source}${decision.escalated ? "↑" : ""}, `;
       log(`step ${step}: ${toolUse.name}${summarizeInput(toolUse.name, input)}   [${srcTag}${kind}, ${body.length} chars]`);
-      telemetry.push({ step, source: decision.source, kind, inputTokens: decision.inputTokens, outputTokens: decision.outputTokens, observationChars: body.length });
+      telemetry.push({ step, source: decision.source, kind, inputTokens: decision.inputTokens, outputTokens: decision.outputTokens, latencyMs, observationChars: body.length });
 
       prev = cur;
       prevUrl = cur.url;

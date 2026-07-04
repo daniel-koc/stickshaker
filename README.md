@@ -9,16 +9,14 @@ server** that gives any MCP-enabled client (Claude Code, Claude Desktop,
 Cursor, …) a policy-guarded browser via the
 [Model Context Protocol](https://modelcontextprotocol.io).
 
-> **Status: local-first routing + page memory.** On top of the earlier layers
-> (CLI + Playwright loop + Claude tool-use agent + snapshot **diffing** +
-> **flight-recorder** traces + **MCP server** + **guardrails**), Stickshaker
-> can now route each step to a **local model** via Ollama and escalate hard
-> steps to Claude by confidence (`--router hybrid`), so cheap steps run for
-> free and only the ones that need it cost cloud tokens. The MCP `recall` tool
-> is now backed by **vector page memory** (Ollama embeddings when available, a
-> dependency-free local embedder otherwise). Still ahead: multi-agent
-> orchestration, WebMCP-hybrid actuation, adversarial injection evals, and the
-> full benchmark matrix.
+> **Status: eval harness.** On top of the earlier layers (CLI + Playwright loop
+> + tool-use agent + snapshot **diffing** + **flight-recorder** traces + **MCP
+> server** + **guardrails** + local-first **routing**), Stickshaker now has a
+> self-hosted **eval suite** with automated grading and an adversarial
+> **injection** suite. One command runs it and prints a reproducible table — on
+> the current suite, Claude Sonnet scores **7/7 tasks and blocks 2/2 injection
+> attacks**; see [BENCHMARKS.md](docs/BENCHMARKS.md). Still ahead: multi-agent
+> orchestration and WebMCP-hybrid actuation.
 
 ---
 
@@ -51,15 +49,16 @@ those is a systems mistake, and each has a systems fix here:
 |---------|--------------|
 | `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
+| `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (7 tasks + 2 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
 | `stickshaker resume <run-dir>` | Continue an interrupted run from its trace. |
 | `stickshaker snapshot --url <url>` | Print the page's element list and text. No API key required. |
 
 In a clone, run these as `pnpm stickshaker …` (tsx, no build step) or
-`node dist/cli.js …` after `pnpm build`. `run` and `bench` default to
-`--model claude-opus-4-8`; pass e.g. `--model claude-sonnet-5` to run cheaper.
-Every run prints per-run **token and cost** accounting at the end.
+`node dist/cli.js …` after `pnpm build`. `run`, `eval`, and `bench` default
+to `--model claude-opus-4-8`; pass e.g. `--model claude-sonnet-5` to run
+cheaper. Every run prints per-run **token and cost** accounting at the end.
 
 ## MCP tools
 
@@ -368,6 +367,9 @@ pnpm stickshaker run "Fill the form with 'hello' and submit" \
 pnpm stickshaker view .stickshaker/traces/<run-dir>
 pnpm stickshaker resume .stickshaker/traces/<run-dir>
 
+# The eval suite: 7 tasks + 2 injection attacks
+pnpm stickshaker eval --model claude-sonnet-5
+
 # Diff-vs-full token benchmark on any task
 pnpm stickshaker bench "Fill the first text field with 'Stickshaker', choose 'Two' in the dropdown select menu, type 'hello' into the 'Type to search' field, then click Submit and report the confirmation message shown." \
   --url https://www.selenium.dev/selenium/web/web-form.html \
@@ -400,7 +402,7 @@ full-snapshot baseline for benchmarking.
 
 Tracing is on by default for the autonomous-agent paths — CLI `run`
 (`--no-trace` to disable), `resume`, and the MCP `browse_task` tool — and off
-for the measurement command (`bench`) and the step-by-step MCP
+for the measurement commands (`eval`, `bench`) and the step-by-step MCP
 `snapshot`/`act` session. Every traced run writes a directory under `.stickshaker/traces/`:
 ```
 .stickshaker/traces/<timestamp>_<task-slug>/
@@ -485,7 +487,8 @@ Every claim reproduces with one command — see
 | Claim | Measured |
 |-------|----------|
 | Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
-| Hybrid routing (single form task) | **~68% lower cloud cost**, same outcome |
+| Eval suite (Sonnet) | **7/7 tasks, 2/2 injections blocked** — single run per cell |
+| Hybrid routing (4-task slice) | **~55% cheaper** than cloud-only, at 3/4 vs 4/4 — the cost/accuracy dial |
 
 ---
 
@@ -498,14 +501,14 @@ place):
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `ANTHROPIC_API_KEY` | Claude access for `run`/`resume`/`bench` and the MCP `browse_task` tool | — (keyless: `snapshot`, `view`) |
+| `ANTHROPIC_API_KEY` | Claude access for `run`/`resume`/`eval`/`bench` and the MCP `browse_task` tool | — (keyless: `snapshot`, `view`) |
 | `STICKSHAKER_MODEL` | Model used by the MCP `browse_task` tool | `claude-opus-4-8` |
 
 ## Layout
 
 | File | Role |
 |---|---|
-| `src/cli.ts` | Command-line entry (`run`, `mcp`, `resume`, `view`, `bench`, `snapshot`) |
+| `src/cli.ts` | Command-line entry (`run`, `mcp`, `eval`, `resume`, `view`, `bench`, `snapshot`) |
 | `src/agent.ts` | The agent loop: routing, keyframe/delta decisions, history elision, guardrails, failure recovery, recording |
 | `src/browser.ts` | Playwright wrapper: launch, stable-ref snapshot, actions |
 | `src/observe.ts` | Snapshot diffing, observation rendering, provenance labeling |
@@ -514,6 +517,8 @@ place):
 | `src/ollama.ts` | Local-model client (Ollama, OpenAI-compatible) + message/tool conversion |
 | `src/memory.ts` | Vector page memory: pluggable embeddings + cosine store |
 | `src/mcp.ts` | MCP server exposing the runtime as tools |
+| `src/fixtures.ts` | Self-hosted deterministic fixture pages for the eval suite |
+| `src/eval.ts` | Eval tasks, automated graders, and metrics aggregation |
 | `src/recorder.ts` | Flight recorder: JSONL trace, screenshots, `run.json` checkpoint |
 | `src/telemetry.ts` | OpenTelemetry spans exported to a JSONL file |
 | `src/view.ts` | Self-contained HTML report generator |

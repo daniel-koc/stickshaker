@@ -51,6 +51,8 @@ export interface StepTelemetry {
   /** Input tokens for the call that chose this step's action. */
   inputTokens: number;
   outputTokens: number;
+  /** Wall-clock latency of the decision call, in ms. */
+  latencyMs: number;
   /** Size of the observation appended after this step, in characters. */
   observationChars: number;
 }

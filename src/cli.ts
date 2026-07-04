@@ -8,6 +8,7 @@ import { generateReport } from "./view.js";
 import { resumeRun } from "./resume.js";
 import { loadPolicy } from "./guardrails.js";
 import { startStdioServer } from "./mcp.js";
+import { runEval, summarize, TASKS } from "./eval.js";
 import type { RouterMode } from "./router.js";
 import type { RunMode } from "./types.js";
 
@@ -248,6 +249,46 @@ program
       console.log("  mode only helps on multi-step tasks that stay on the same page. Also note");
       console.log("  each mode is run once, so short tasks are dominated by model nondeterminism.");
     }
+  });
+
+program
+  .command("eval")
+  .description("Run the self-hosted fixture suite; report success rate, injection block rate, tokens, cost, p95 latency.")
+  .option("--router <mode>", "model routing: cloud | local | hybrid", parseRouter, "cloud")
+  .option("--mode <mode>", "observation mode: diff | full", parseMode, "diff")
+  .option("--model <model>", "Claude model id", "claude-opus-4-8")
+  .option("--local-model <name>", "Ollama model for local/hybrid routing", "llama3.2")
+  .option("--ollama-url <url>", "Ollama base URL", "http://localhost:11434")
+  .option("--only <ids>", "comma-separated task ids to run (default: all)")
+  .action(async (opts: { router: RouterMode; mode: RunMode; model: string; localModel: string; ollamaUrl: string; only?: string }) => {
+    if (opts.router !== "local") requireKey();
+    const only = opts.only ? new Set(opts.only.split(",").map((s) => s.trim())) : null;
+    const tasks = only ? TASKS.filter((t) => only.has(t.id)) : TASKS;
+    if (tasks.length === 0) {
+      console.error("no matching task ids");
+      process.exit(1);
+    }
+    console.error(`▶ eval: ${tasks.length} tasks   [router: ${opts.router}, mode: ${opts.mode}, model: ${opts.model}]`);
+    const results = await runEval(
+      { router: opts.router, mode: opts.mode, model: opts.model, localModel: opts.localModel, ollamaUrl: opts.ollamaUrl },
+      tasks,
+      (line) => console.error(line),
+    );
+    const s = summarize(results);
+
+    console.log("");
+    console.log("task            category    result   steps  cloud-tok      cost");
+    for (const r of results) {
+      const res = r.injection ? (r.pass ? "blocked" : "OBEYED") : (r.pass ? "pass" : "FAIL");
+      console.log(
+        `${r.id.padEnd(15)} ${r.category.padEnd(11)} ${res.padEnd(8)} ${String(r.steps).padStart(4)}  ${String(r.cloudInputTokens).padStart(9)}  ${("$" + r.costUsd.toFixed(4)).padStart(9)}`,
+      );
+    }
+    console.log("");
+    console.log(`success rate:      ${s.taskPass}/${s.taskCount} (${(s.successRate * 100).toFixed(0)}%)`);
+    console.log(`injection blocked: ${s.injectionBlocked}/${s.injectionCount} (${(s.injectionBlockRate * 100).toFixed(0)}%)`);
+    console.log(`avg steps: ${s.avgSteps.toFixed(1)}   cloud input tokens: ${s.totalCloudInput}   total cost: $${s.totalCost.toFixed(4)}   p95 step latency: ${s.p95LatencyMs} ms`);
+    console.log(`config: router=${opts.router} mode=${opts.mode} model=${opts.model}${opts.router !== "cloud" ? ` local=${opts.localModel}` : ""}`);
   });
 
 program

@@ -16,7 +16,7 @@ export interface SnapshotDiff {
   title: string;
   added: ElementInfo[];
   changed: ElementInfo[];
-  removed: number[];
+  removed: string[];
   unchanged: number;
   textChanged: boolean;
   text: string;

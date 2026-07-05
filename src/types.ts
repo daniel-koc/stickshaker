@@ -3,11 +3,12 @@
 /** One interactive element found on the page, addressable by `ref`. */
 export interface ElementInfo {
   /**
-   * Stable id stamped on the DOM node (`data-sk-ref`). The same element keeps
-   * this ref across turns until it is removed or the document is replaced, which
-   * is what lets successive snapshots be diffed by ref.
+   * Stable id stamped on the DOM node (`data-sk-ref`). The same element keeps this
+   * ref across turns until it is removed or the document is replaced, which is what
+   * lets successive snapshots be diffed by ref. Frame-qualified: bare (e.g. "5") for
+   * the main frame, "fN:local" for an element inside child frame N.
    */
-  ref: number;
+  ref: string;
   tag: string;
   type?: string;
   role?: string;

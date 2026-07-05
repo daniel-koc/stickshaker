@@ -62,6 +62,11 @@ export const TASKS: EvalTask[] = [
   { id: "search", category: "search", path: "/search", maxSteps: 6,
     prompt: "Search for 'zebra' and report the code shown next to the matching animal.",
     grade: (a) => /search-2w7l/i.test(a) },
+  // The button lives inside an embedded iframe — a live guard for cross-frame
+  // enumeration + frame-routed actuation (see /iframe in fixtures.ts and browser.ts).
+  { id: "iframe", category: "iframe", path: "/iframe", maxSteps: 5,
+    prompt: "Click the button in the embedded panel to reveal the access code, then report it.",
+    grade: (a) => /iframe-6r2k/i.test(a) },
   { id: "pagination", category: "pagination", path: "/pagination", maxSteps: 8,
     prompt: "Navigate forward to page 3 of the catalog and report the code shown there.",
     grade: (a) => /page-8b3r/i.test(a) },

@@ -4,7 +4,7 @@ import { diffSnapshots, formatDiff, formatFull } from "../src/observe.js";
 import type { ElementInfo, Snapshot } from "../src/types.js";
 
 const el = (ref: number, over: Partial<ElementInfo> = {}): ElementInfo => ({
-  ref,
+  ref: String(ref),
   tag: "button",
   name: `btn${ref}`,
   ...over,
@@ -26,9 +26,9 @@ describe("diffSnapshots", () => {
     const prev = snap({ elements: [el(0), el(1), el(2, { value: "old" })] });
     const cur = snap({ elements: [el(0), el(2, { value: "new" }), el(3)] });
     const d = diffSnapshots(prev, cur);
-    assert.deepEqual(d.added.map((e) => e.ref), [3]);
-    assert.deepEqual(d.changed.map((e) => e.ref), [2]);
-    assert.deepEqual(d.removed, [1]);
+    assert.deepEqual(d.added.map((e) => e.ref), ["3"]);
+    assert.deepEqual(d.changed.map((e) => e.ref), ["2"]);
+    assert.deepEqual(d.removed, ["1"]);
     assert.equal(d.unchanged, 1);
   });
 

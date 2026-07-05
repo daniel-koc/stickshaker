@@ -17,10 +17,10 @@ export const tools: Anthropic.Tool[] = [
   },
   {
     name: "click",
-    description: "Click the interactive element with the given ref number from the current snapshot.",
+    description: "Click the interactive element with the given ref from the current snapshot.",
     input_schema: {
       type: "object",
-      properties: { ref: { type: "integer", description: "The [ref] of the element to click." } },
+      properties: { ref: { type: "string", description: 'The [ref] token of the element, exactly as shown (e.g. "5", or "f2:5" for an element inside a frame).' } },
       required: ["ref"],
       additionalProperties: false,
     },
@@ -32,7 +32,7 @@ export const tools: Anthropic.Tool[] = [
     input_schema: {
       type: "object",
       properties: {
-        ref: { type: "integer", description: "The [ref] of the field." },
+        ref: { type: "string", description: 'The [ref] token of the field, exactly as shown (e.g. "5" or "f2:5").' },
         text: { type: "string", description: "The text to type." },
         submit: { type: "boolean", description: "Press Enter after typing." },
       },
@@ -46,7 +46,7 @@ export const tools: Anthropic.Tool[] = [
     input_schema: {
       type: "object",
       properties: {
-        ref: { type: "integer", description: "The [ref] of the <select>." },
+        ref: { type: "string", description: 'The [ref] token of the <select>, exactly as shown (e.g. "5" or "f2:5").' },
         value: { type: "string", description: "Option value or visible label." },
       },
       required: ["ref", "value"],

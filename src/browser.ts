@@ -1,5 +1,5 @@
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import type { Snapshot, ActionResult } from "./types.js";
+import { chromium, type Browser, type BrowserContext, type Page, type Frame } from "playwright";
+import type { Snapshot, ActionResult, ElementInfo } from "./types.js";
 
 const MAX_ELEMENTS = 150;
 const MAX_TEXT_CHARS = 6000;
@@ -29,19 +29,135 @@ function isNavigationRace(e: unknown): boolean {
   );
 }
 
+function frameHost(url: string): string {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Runs IN one frame's document: enumerate visible interactive elements, stamp each
+ * with a stable per-document `data-sk-ref`, and return them with FRAME-LOCAL numeric
+ * refs plus the frame's visible text and per-document token. The BrowserSession
+ * qualifies the refs across frames (`fN:local`) and merges the results. Kept at
+ * module scope so it can be handed to both `page.mainFrame().evaluate` and each
+ * child `frame.evaluate` — Playwright can execute it in cross-origin frames too.
+ */
+const enumerateInFrame = ({ maxElements, maxText }: { maxElements: number; maxText: number }) => {
+  // Stable refs: keep any ref already on a node; only new nodes get a new number.
+  // So the same element carries the same [ref] across turns, which is what lets
+  // successive snapshots be diffed by ref.
+  const counter = globalThis as unknown as { __skNextRef?: number };
+  if (typeof counter.__skNextRef !== "number") counter.__skNextRef = 0;
+
+  const isVisible = (el: Element): boolean => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    const style = window.getComputedStyle(el);
+    return !(
+      style.visibility === "hidden" ||
+      style.display === "none" ||
+      style.opacity === "0"
+    );
+  };
+
+  const interactiveSelector = [
+    "a[href]", "button", "input", "textarea", "select",
+    "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]",
+    "[role=tab]", "[role=menuitem]", "[role=option]", "[role=switch]",
+    "[contenteditable=true]", "[onclick]", "[tabindex]:not([tabindex='-1'])",
+  ].join(",");
+
+  const accessibleName = (el: Element): string => {
+    const aria = el.getAttribute("aria-label");
+    if (aria) return aria.trim();
+    const text = (el as HTMLElement).innerText?.trim();
+    if (text) return text;
+    const placeholder = (el as HTMLInputElement).placeholder;
+    if (placeholder) return placeholder.trim();
+    const title = el.getAttribute("title");
+    if (title) return title.trim();
+    const alt = el.getAttribute("alt");
+    if (alt) return alt.trim();
+    // Never fall back to a secret field's value for the accessible name.
+    const isPassword = el.tagName === "INPUT" && (el as HTMLInputElement).type === "password";
+    const value = (el as HTMLInputElement).value;
+    if (value && !isPassword) return value.trim();
+    return "";
+  };
+
+  const elements: Array<Record<string, unknown>> = [];
+  let elementsTruncated = false;
+
+  for (const el of Array.from(document.querySelectorAll(interactiveSelector))) {
+    if (!isVisible(el)) continue;
+    if (elements.length >= maxElements) {
+      elementsTruncated = true;
+      break;
+    }
+    let refAttr = el.getAttribute("data-sk-ref");
+    if (refAttr === null) {
+      refAttr = String(counter.__skNextRef!++);
+      el.setAttribute("data-sk-ref", refAttr);
+    }
+    const ref = Number(refAttr);
+    const tag = el.tagName.toLowerCase();
+    const info: Record<string, unknown> = { ref, tag, name: accessibleName(el).slice(0, 120) };
+
+    const role = el.getAttribute("role");
+    if (role) info.role = role;
+    const inputType = (el as HTMLInputElement).type;
+    if (inputType && (tag === "input" || tag === "button")) info.type = inputType;
+    if (tag === "a") {
+      const href = (el as HTMLAnchorElement).href;
+      if (href) info.href = href;
+    }
+    if (tag === "input" || tag === "textarea" || tag === "select") {
+      const value = (el as HTMLInputElement).value;
+      // Never surface secret field contents into snapshots, traces, or reports.
+      if (value) info.value = inputType === "password" ? "[redacted]" : value.slice(0, 80);
+    }
+    elements.push(info);
+  }
+
+  const fullText = ((document.body?.innerText ?? "") as string)
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return {
+    url: location.href,
+    title: document.title,
+    elements,
+    text: fullText.slice(0, maxText),
+    elementsTruncated,
+    textTruncated: fullText.length > maxText,
+    docToken: (globalThis as unknown as { __skDocToken?: string }).__skDocToken,
+  };
+};
+
 /**
  * Thin wrapper over a Playwright Chromium session.
  *
- * Snapshotting enumerates visible interactive elements and stamps each with a
- * `data-sk-ref` attribute, so the agent can act on an element by its ref number.
- * Refs are re-assigned on every snapshot for now; the diff engine makes them stable
- * across turns so successive snapshots can be diffed instead of re-sent.
+ * Snapshotting enumerates visible interactive elements across the main frame AND
+ * every child frame (iframes, same- and cross-origin), stamping each with a
+ * `data-sk-ref` so the agent can act on it by its ref. Refs are stable across turns
+ * (so snapshots can be diffed) and frame-qualified — bare (e.g. "5") for the main
+ * frame, "fN:local" for an element inside child frame N — so refs never collide and
+ * actuation can route each one back to its owning frame.
  */
 export class BrowserSession {
   private browser!: Browser;
   private context!: BrowserContext;
   page!: Page;
   private popups: Page[] = [];
+  // Stable frame ids across turns. Frame object identity is stable until a frame
+  // detaches, so a ref like "f2:5" points to the same frame next turn.
+  private frameIds = new Map<Frame, number>();
+  private frameById = new Map<number, Frame>();
+  private nextChildFrameId = 1;
 
   static async launch(opts: BrowserOptions): Promise<BrowserSession> {
     const s = new BrowserSession();
@@ -146,111 +262,90 @@ export class BrowserSession {
     }
   }
 
+  /** Stable id for a frame across turns (the main frame is always 0). */
+  private frameIdOf(f: Frame): number {
+    const existing = this.frameIds.get(f);
+    if (existing !== undefined) return existing;
+    const id = f === this.page.mainFrame() ? 0 : this.nextChildFrameId++;
+    this.frameIds.set(f, id);
+    this.frameById.set(id, f);
+    return id;
+  }
+
   private async captureSnapshot(): Promise<Snapshot> {
-    const raw = await this.page.evaluate(
-      ({ maxElements, maxText }) => {
-        // Stable refs: keep any ref already on a node; only new nodes get a new
-        // number. So the same element carries the same [ref] across turns, which
-        // is what lets successive snapshots be diffed by ref.
-        const counter = globalThis as unknown as { __skNextRef?: number };
-        if (typeof counter.__skNextRef !== "number") counter.__skNextRef = 0;
+    const main = this.page.mainFrame();
+    const elements: ElementInfo[] = [];
+    const texts: string[] = [];
+    const tokens: string[] = [];
+    let elementsTruncated = false;
+    let textTruncated = false;
+    let remaining = MAX_ELEMENTS;
 
-        const isVisible = (el: Element): boolean => {
-          const rect = el.getBoundingClientRect();
-          if (rect.width === 0 || rect.height === 0) return false;
-          const style = window.getComputedStyle(el);
-          return !(
-            style.visibility === "hidden" ||
-            style.display === "none" ||
-            style.opacity === "0"
-          );
-        };
+    // Main frame first, OUTSIDE the per-frame try/catch: a nav race here must reach
+    // snapshot()'s retry, not be swallowed as an empty snapshot.
+    const mainRaw = await main.evaluate(enumerateInFrame, { maxElements: remaining, maxText: MAX_TEXT_CHARS });
+    for (const el of mainRaw.elements) elements.push({ ...(el as unknown as ElementInfo), ref: String(el.ref) });
+    remaining -= mainRaw.elements.length;
+    elementsTruncated ||= mainRaw.elementsTruncated;
+    textTruncated ||= mainRaw.textTruncated;
+    tokens.push(String(mainRaw.docToken ?? ""));
+    if (mainRaw.text) texts.push(mainRaw.text);
 
-        const interactiveSelector = [
-          "a[href]", "button", "input", "textarea", "select",
-          "[role=button]", "[role=link]", "[role=checkbox]", "[role=radio]",
-          "[role=tab]", "[role=menuitem]", "[role=option]", "[role=switch]",
-          "[contenteditable=true]", "[onclick]", "[tabindex]:not([tabindex='-1'])",
-        ].join(",");
+    // Child frames (iframes, same- and cross-origin — Playwright can evaluate in
+    // both). Each is enumerated independently and its refs are frame-qualified
+    // ("fN:local") so they never collide. A frame that is mid-navigation, detached,
+    // or otherwise unavailable is skipped this turn rather than failing the snapshot.
+    for (const f of this.page.frames()) {
+      if (f === main) continue;
+      if (remaining <= 0) { elementsTruncated = true; break; }
+      const id = this.frameIdOf(f);
+      try {
+        const raw = await f.evaluate(enumerateInFrame, { maxElements: remaining, maxText: MAX_TEXT_CHARS });
+        for (const el of raw.elements) elements.push({ ...(el as unknown as ElementInfo), ref: `f${id}:${String(el.ref)}` });
+        remaining -= raw.elements.length;
+        elementsTruncated ||= raw.elementsTruncated;
+        textTruncated ||= raw.textTruncated;
+        tokens.push(`${id}=${String(raw.docToken ?? "")}`);
+        if (raw.text.trim()) texts.push(`[frame f${id} — ${frameHost(raw.url)}]\n${raw.text}`);
+      } catch {
+        /* frame navigating / detached / unavailable — skip it this turn */
+      }
+    }
 
-        const accessibleName = (el: Element): string => {
-          const aria = el.getAttribute("aria-label");
-          if (aria) return aria.trim();
-          const text = (el as HTMLElement).innerText?.trim();
-          if (text) return text;
-          const placeholder = (el as HTMLInputElement).placeholder;
-          if (placeholder) return placeholder.trim();
-          const title = el.getAttribute("title");
-          if (title) return title.trim();
-          const alt = el.getAttribute("alt");
-          if (alt) return alt.trim();
-          // Never fall back to a secret field's value for the accessible name.
-          const isPassword = el.tagName === "INPUT" && (el as HTMLInputElement).type === "password";
-          const value = (el as HTMLInputElement).value;
-          if (value && !isPassword) return value.trim();
-          return "";
-        };
+    let text = texts.join("\n\n");
+    if (text.length > MAX_TEXT_CHARS) {
+      text = text.slice(0, MAX_TEXT_CHARS);
+      textTruncated = true;
+    }
 
-        const elements: Array<Record<string, unknown>> = [];
-        let elementsTruncated = false;
-
-        for (const el of Array.from(document.querySelectorAll(interactiveSelector))) {
-          if (!isVisible(el)) continue;
-          if (elements.length >= maxElements) {
-            elementsTruncated = true;
-            break;
-          }
-          let refAttr = el.getAttribute("data-sk-ref");
-          if (refAttr === null) {
-            refAttr = String(counter.__skNextRef!++);
-            el.setAttribute("data-sk-ref", refAttr);
-          }
-          const ref = Number(refAttr);
-          const tag = el.tagName.toLowerCase();
-          const info: Record<string, unknown> = { ref, tag, name: accessibleName(el).slice(0, 120) };
-
-          const role = el.getAttribute("role");
-          if (role) info.role = role;
-          const inputType = (el as HTMLInputElement).type;
-          if (inputType && (tag === "input" || tag === "button")) info.type = inputType;
-          if (tag === "a") {
-            const href = (el as HTMLAnchorElement).href;
-            if (href) info.href = href;
-          }
-          if (tag === "input" || tag === "textarea" || tag === "select") {
-            const value = (el as HTMLInputElement).value;
-            // Never surface secret field contents into snapshots, traces, or reports.
-            if (value) info.value = inputType === "password" ? "[redacted]" : value.slice(0, 80);
-          }
-          elements.push(info);
-        }
-
-        const fullText = ((document.body?.innerText ?? "") as string)
-          .replace(/[ \t]+\n/g, "\n")
-          .replace(/\n{3,}/g, "\n\n")
-          .trim();
-
-        return {
-          url: location.href,
-          title: document.title,
-          elements,
-          text: fullText.slice(0, maxText),
-          elementsTruncated,
-          textTruncated: fullText.length > maxText,
-          docToken: (globalThis as unknown as { __skDocToken?: string }).__skDocToken,
-        };
-      },
-      { maxElements: MAX_ELEMENTS, maxText: MAX_TEXT_CHARS },
-    );
-
-    return raw as unknown as Snapshot;
+    return {
+      url: main.url(),
+      title: mainRaw.title,
+      elements,
+      text,
+      elementsTruncated,
+      textTruncated,
+      // Aggregate of every frame's per-document token: a reload of ANY frame — or a
+      // frame appearing/disappearing — changes this, so agent.ts forces a keyframe
+      // and never diffs a replaced document against stale refs.
+      docToken: tokens.join("|"),
+    };
   }
 
-  private locator(ref: number) {
-    return this.page.locator(`[data-sk-ref="${ref}"]`);
+  /** Resolve a (possibly frame-qualified) ref to a Playwright locator in its frame. */
+  private locator(ref: string) {
+    const m = /^f(\d+):(\d+)$/.exec(ref);
+    if (m) {
+      const frame = this.frameById.get(Number(m[1]));
+      if (frame && !frame.isDetached()) return frame.locator(`[data-sk-ref="${m[2]}"]`);
+      // The frame is gone (detached / navigated away): return a locator that matches
+      // nothing, so the action fails cleanly and the agent re-snapshots and replans.
+      return this.page.mainFrame().locator(`[data-sk-ref="__detached_frame__"]`);
+    }
+    return this.page.mainFrame().locator(`[data-sk-ref="${ref}"]`);
   }
 
-  async click(ref: number): Promise<ActionResult> {
+  async click(ref: string): Promise<ActionResult> {
     try {
       await this.locator(ref).click({ timeout: ACTION_TIMEOUT_MS });
       await this.settle();
@@ -260,7 +355,7 @@ export class BrowserSession {
     }
   }
 
-  async type(ref: number, text: string, submit: boolean): Promise<ActionResult> {
+  async type(ref: string, text: string, submit: boolean): Promise<ActionResult> {
     try {
       const loc = this.locator(ref);
       await loc.fill(text, { timeout: ACTION_TIMEOUT_MS });
@@ -274,7 +369,7 @@ export class BrowserSession {
     }
   }
 
-  async selectOption(ref: number, value: string): Promise<ActionResult> {
+  async selectOption(ref: string, value: string): Promise<ActionResult> {
     try {
       // Try by value, then fall back to visible label.
       const loc = this.locator(ref);

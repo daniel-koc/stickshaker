@@ -75,6 +75,20 @@ function handle(pathname: string, params: URLSearchParams): string {
       );
     }
 
+    case "/iframe":
+      // The control lives inside an embedded (same-origin) iframe. The code is
+      // reachable ONLY by actuating an element INSIDE the frame, so a pass proves
+      // cross-frame enumeration + frame-routed actuation end to end.
+      return page(
+        "Embedded panel",
+        `<h1>Embedded panel</h1><p>The control you need is in the panel below.</p><iframe src="/iframe-inner" style="width:420px;height:180px;border:1px solid #ccc"></iframe>`,
+      );
+    case "/iframe-inner":
+      return page(
+        "Panel",
+        `<h1>Panel</h1><button onclick="document.getElementById('c').textContent='Access code: IFRAME-6R2K'">Show access code</button><div id="c"></div>`,
+      );
+
     case "/search": {
       const q = (params.get("q") ?? "").toLowerCase();
       if (params.get("q") === null) {

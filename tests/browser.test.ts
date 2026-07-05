@@ -36,6 +36,19 @@ before(async () => {
         return `<html><body><h1>Landed</h1><button>onward</button></body></html>`;
       case "/popup":
         return `<html><body><button id="p" onclick="window.open('${site.away}/landed')">open</button></body></html>`;
+      case "/framehost":
+        // A same-origin iframe (/panel) and a CROSS-origin one (localhost /panel2).
+        return `<html><body><h1>Host</h1><p>outer host text</p>
+          <iframe src="/panel"></iframe>
+          <iframe src="${site.away}/panel2"></iframe>
+          </body></html>`;
+      case "/panel":
+        return `<html><body><p>same-origin panel text ZEBRA</p>
+          <button onclick="document.getElementById('o').textContent='revealed PANEL-3F7K'">Reveal panel</button>
+          <input placeholder="panel field"><div id="o"></div></body></html>`;
+      case "/panel2":
+        return `<html><body><p>cross-origin panel text GIRAFFE</p>
+          <button>Cross button</button></body></html>`;
       case "/webmcp": {
         return {
           html: `<html><body><h1>Tools</h1><div id="r"></div><script>
@@ -147,6 +160,71 @@ describe("navigation-race resilience (regression: jump menus and instant redirec
       const s = await b.snapshot();
       assert.match(s.url, /\/landed$/);
     }
+  });
+});
+
+describe("iframes (cross-frame piercing + actuation)", () => {
+  it("enumerates interactive elements from same- AND cross-origin child frames with frame-qualified refs", async () => {
+    await b.navigate(`${site.ok}/framehost`);
+    const s = await b.snapshot();
+    const reveal = s.elements.find((e) => e.name === "Reveal panel");
+    const cross = s.elements.find((e) => e.name === "Cross button");
+    assert.ok(reveal, "same-origin frame button found");
+    assert.ok(cross, "cross-origin frame button found");
+    assert.match(reveal.ref, /^f\d+:\d+$/, `frame-qualified ref, got ${reveal?.ref}`);
+    assert.match(cross.ref, /^f\d+:\d+$/);
+    assert.notEqual(reveal.ref.split(":")[0], cross.ref.split(":")[0], "different frames get different ids");
+  });
+
+  it("merges every frame's visible text (main + same- + cross-origin)", async () => {
+    await b.navigate(`${site.ok}/framehost`);
+    const s = await b.snapshot();
+    assert.match(s.text, /outer host text/);
+    assert.match(s.text, /same-origin panel text ZEBRA/);
+    assert.match(s.text, /cross-origin panel text GIRAFFE/);
+  });
+
+  it("clicks a button inside a child frame via its frame-qualified ref", async () => {
+    await b.navigate(`${site.ok}/framehost`);
+    let s = await b.snapshot();
+    const reveal = s.elements.find((e) => e.name === "Reveal panel");
+    assert.ok(reveal);
+    const r = await b.click(reveal.ref);
+    assert.equal(r.ok, true, r.detail);
+    s = await b.snapshot();
+    assert.match(s.text, /revealed PANEL-3F7K/, "the in-frame click took effect");
+  });
+
+  it("types into an input inside a child frame", async () => {
+    await b.navigate(`${site.ok}/framehost`);
+    let s = await b.snapshot();
+    const field = s.elements.find((e) => e.name === "panel field");
+    assert.ok(field);
+    const r = await b.type(field.ref, "hello frame", false);
+    assert.equal(r.ok, true, r.detail);
+    s = await b.snapshot();
+    const after = s.elements.find((e) => e.name === "panel field" || e.value === "hello frame");
+    assert.equal(after?.value, "hello frame");
+  });
+
+  it("keeps a child-frame element's ref stable across snapshots", async () => {
+    await b.navigate(`${site.ok}/framehost`);
+    const r1 = (await b.snapshot()).elements.find((e) => e.name === "Reveal panel")?.ref;
+    const r2 = (await b.snapshot()).elements.find((e) => e.name === "Reveal panel")?.ref;
+    assert.ok(r1 && r1 === r2, `stable frame ref: ${r1} vs ${r2}`);
+  });
+
+  it("changes the aggregate docToken when a child frame reloads (forces a keyframe)", async () => {
+    await b.navigate(`${site.ok}/framehost`);
+    const t1 = (await b.snapshot()).docToken;
+    // Reload just the same-origin iframe's document.
+    await b.page.evaluate(() => {
+      const f = document.querySelector("iframe");
+      if (f) (f as HTMLIFrameElement).contentWindow?.location.reload();
+    });
+    await b.page.waitForTimeout(300);
+    const t2 = (await b.snapshot()).docToken;
+    assert.notEqual(t1, t2, "a child-frame reload changes the aggregate token");
   });
 });
 

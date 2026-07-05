@@ -572,11 +572,11 @@ async function execAction(
     case "navigate":
       return browser.navigate(String(input.url ?? ""));
     case "click":
-      return browser.click(Number(input.ref));
+      return browser.click(String(input.ref ?? ""));
     case "type":
-      return browser.type(Number(input.ref), String(input.text ?? ""), Boolean(input.submit));
+      return browser.type(String(input.ref ?? ""), String(input.text ?? ""), Boolean(input.submit));
     case "select_option":
-      return browser.selectOption(Number(input.ref), String(input.value ?? ""));
+      return browser.selectOption(String(input.ref ?? ""), String(input.value ?? ""));
     case "scroll":
       return browser.scroll(input.direction === "up" ? "up" : "down");
     case "go_back":

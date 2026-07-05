@@ -118,12 +118,13 @@ export async function startMcpClient(opts: Parameters<typeof buildServer>[0]): P
   };
 }
 
-/** The [ref] number of the first snapshot line whose text contains `label`. */
-export function refOf(snapshotText: string, label: string): number {
+/** The [ref] token of the first snapshot line whose text contains `label`. Handles
+ *  both bare main-frame refs ("5") and frame-qualified refs ("f2:5"). */
+export function refOf(snapshotText: string, label: string): string {
   for (const line of snapshotText.split("\n")) {
     if (line.includes(label)) {
-      const m = /\[(\d+)\]/.exec(line);
-      if (m) return Number(m[1]);
+      const m = /\[([A-Za-z0-9:]+)\]/.exec(line);
+      if (m) return m[1]!;
     }
   }
   throw new Error(`no element containing ${JSON.stringify(label)} in snapshot:\n${snapshotText}`);

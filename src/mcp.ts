@@ -175,13 +175,13 @@ class Interactive {
         this.noteOrigin(String(input.url ?? ""));
         break;
       case "click":
-        result = await b.click(Number(input.ref));
+        result = await b.click(String(input.ref ?? ""));
         break;
       case "type":
-        result = await b.type(Number(input.ref), String(input.text ?? ""), Boolean(input.submit));
+        result = await b.type(String(input.ref ?? ""), String(input.text ?? ""), Boolean(input.submit));
         break;
       case "select_option":
-        result = await b.selectOption(Number(input.ref), String(input.value ?? ""));
+        result = await b.selectOption(String(input.ref ?? ""), String(input.value ?? ""));
         break;
       case "scroll":
         result = await b.scroll(input.direction === "up" ? "up" : "down");
@@ -326,7 +326,7 @@ export function buildServer(opts: {
       inputSchema: {
         tool: z.enum(["navigate", "click", "type", "select_option", "scroll", "go_back", "webmcp"]),
         url: z.string().optional(),
-        ref: z.number().int().optional(),
+        ref: z.string().optional().describe('Element [ref] token as shown in the snapshot, e.g. "5" or "f2:5".'),
         text: z.string().optional(),
         value: z.string().optional(),
         submit: z.boolean().optional(),

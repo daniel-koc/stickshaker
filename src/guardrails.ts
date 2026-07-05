@@ -136,10 +136,12 @@ export function evaluateAction(policy: Policy, ctx: ActionContext): Decision {
  * before the action ran.
  */
 export function evaluateDestination(policy: Policy, url: string, taskOrigin?: string): Decision {
-  // The initial empty document. Popups start here, and benign pages open a blank
-  // tab and write into it; there is no content and no host, so treating it as
-  // "cross-origin at null" would false-positive on an everyday pattern.
-  if (url === "about:blank") return { effect: "allow" };
+  // The initial empty document, and srcdoc frames. Popups start at about:blank,
+  // and benign pages open a blank tab and write into it; an about:srcdoc frame's
+  // content is authored inline by its parent page (same trust as the parent).
+  // Neither has a host, so treating them as "cross-origin at null" would
+  // false-positive on everyday patterns.
+  if (url === "about:blank" || url === "about:srcdoc") return { effect: "allow" };
   const host = hostOf(url);
   const origin = originOf(url);
   if (host && policy.domains?.deny?.some((p) => globMatch(p, host))) {

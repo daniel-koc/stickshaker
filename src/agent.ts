@@ -95,15 +95,23 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   // transient overload doesn't abort a whole run.
   const hasKey = Boolean(process.env.ANTHROPIC_API_KEY);
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY ?? "local-only-placeholder", maxRetries: 5 });
-  const browser = await BrowserSession.launch({ headless: opts.headless });
-  const usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
-  const telemetry: StepTelemetry[] = [];
-  const log = opts.onStep ?? (() => {});
-  const messages: Anthropic.MessageParam[] = [];
 
   // sameOriginOnly scoping. Recorded in the trace so resumes keep the original
   // anchor instead of re-deriving it from wherever the run stopped.
   const taskOrigin = opts.taskOrigin ?? (opts.startUrl ? safeOrigin(opts.startUrl) : undefined);
+  const policy = opts.policy ?? EMPTY_POLICY;
+
+  // The destination policy extends into embedded documents: a child frame on a
+  // disallowed origin is never enumerated, its text never reaches the model, and
+  // its page-provided tools are neither offered nor callable.
+  const browser = await BrowserSession.launch({
+    headless: opts.headless,
+    frameAllowed: (url) => evaluateDestination(policy, url, taskOrigin).effect === "allow",
+  });
+  const usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+  const telemetry: StepTelemetry[] = [];
+  const log = opts.onStep ?? (() => {});
+  const messages: Anthropic.MessageParam[] = [];
 
   // Flight recorder + OpenTelemetry (only when tracing is requested).
   const meta: RunMeta = {
@@ -192,7 +200,6 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     for (const o of observations) if (o.group < keyframeGroup) o.elide();
   };
 
-  const policy = opts.policy ?? EMPTY_POLICY;
   const maxSteps = Math.min(opts.maxSteps, policy.budgets?.maxSteps ?? Number.POSITIVE_INFINITY);
 
   // Resolve a destination URL against the policy, running the approval gate for
@@ -219,9 +226,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
         const approved = pre.effect === "approve" && opts.approve
           ? await opts.approve({ tool: "navigate", input: { url: opts.startUrl }, reason: pre.reason })
           : false;
+        recorder?.event("guardrail", { step: 0, tool: "navigate", effect: pre.effect, reason: pre.reason, approved, stage: "start_url" });
         if (!approved) {
           const why = pre.effect === "deny" ? pre.reason : `operator did not approve (${pre.reason})`;
-          recorder?.event("guardrail", { step: 0, tool: "navigate", effect: pre.effect, reason: pre.reason, stage: "start_url" });
           return ret("failed", `The starting URL is not allowed by the policy: ${why}.`, 0);
         }
       }

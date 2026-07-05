@@ -111,7 +111,15 @@ class Interactive {
   }
 
   private async ensure(): Promise<BrowserSession> {
-    if (!this.session) this.session = await BrowserSession.launch({ headless: true });
+    if (!this.session) {
+      this.session = await BrowserSession.launch({
+        headless: true,
+        // Extends the destination policy into embedded documents (denied-origin
+        // iframes are omitted, their tools unavailable). Reads taskOrigin through
+        // `this` because the anchor is only set by the first navigate.
+        frameAllowed: (url) => evaluateDestination(this.policy, url, this.taskOrigin).effect === "allow",
+      });
+    }
     return this.session;
   }
 

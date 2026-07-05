@@ -501,6 +501,12 @@ budgets: { maxSteps: 30, maxCostUsd: 1.00 }
   content, so an instruction hidden in a page reads to the model as data, not a
   command. This is the model-facing half; the policy engine is the enforcing
   half.
+- **Embedded frames**: the domain/origin rules extend into embedded documents —
+  an iframe on a disallowed origin is omitted from snapshots entirely (its text
+  never reaches the model, its page-provided tools are neither offered nor
+  callable), with a visible note marking the omission. The starting URL is
+  enforced too, pre-flight and post-landing, so a redirect can't make the first
+  page a policy-free read.
 
 ```bash
 stickshaker run "Read the docs and summarize" --url https://example.com --policy stickshaker.policy.example.yaml --approve prompt
@@ -622,7 +628,7 @@ pnpm build           # compile to dist/
 pnpm demo            # regenerate the demo artifacts (live site + API key)
 ```
 
-`pnpm test` runs 165 tests through Node's built-in runner (no extra test
+`pnpm test` runs 168 tests through Node's built-in runner (no extra test
 framework) — **no API key needed and nothing talks to the cloud**. Pure units
 cover the policy engine, injection graders, snapshot diffing, the
 untrusted-text fence, vector memory, and cost accounting. Integration suites

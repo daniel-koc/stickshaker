@@ -8,6 +8,16 @@ const EVAL_DEADLINE_MS = 10000;
 
 export interface BrowserOptions {
   headless: boolean;
+  /**
+   * Child-frame admission check. A frame whose URL fails it is not enumerated
+   * (a visible note marks the omission), its text never reaches the snapshot,
+   * and its page-provided tools are neither detected nor callable. This is how
+   * the caller's destination policy extends into embedded documents — without
+   * it, an iframe on a denied origin would be a policy-free read. The main
+   * frame is exempt: callers enforce main-tab landings themselves (with
+   * pull-back and content withholding, which need the snapshot to exist).
+   */
+  frameAllowed?: ((url: string) => boolean) | undefined;
 }
 
 function errMsg(e: unknown): string {
@@ -208,6 +218,7 @@ export class BrowserSession {
   private browser!: Browser;
   private context!: BrowserContext;
   page!: Page;
+  private frameAllowed?: ((url: string) => boolean) | undefined;
   private popups: Page[] = [];
   // Stable frame ids across turns. Frame object identity is stable until a frame
   // detaches, so a ref like "f2:5" points to the same frame next turn.
@@ -217,6 +228,7 @@ export class BrowserSession {
 
   static async launch(opts: BrowserOptions): Promise<BrowserSession> {
     const s = new BrowserSession();
+    s.frameAllowed = opts.frameAllowed;
     s.browser = await chromium.launch({ headless: opts.headless });
     s.context = await s.browser.newContext({ viewport: { width: 1280, height: 800 } });
     // Runs in every document before page scripts, setting up three things: (1) a
@@ -372,6 +384,13 @@ export class BrowserSession {
     // walk sets the truncated flag only if a visible element actually got cut.
     for (const f of this.page.frames()) {
       if (f === main) continue;
+      // Policy extension into embedded documents: a frame on a disallowed origin
+      // is omitted entirely — no elements, no text, no ref-map entry — with a
+      // note so the model (and the trace reader) can see something was withheld.
+      if (this.frameAllowed && !this.frameAllowed(f.url())) {
+        texts.push(`[an embedded frame on ${frameHost(f.url())} was omitted by policy]`);
+        continue;
+      }
       const id = this.frameIdOf(f);
       try {
         const raw = await withDeadline(
@@ -496,6 +515,9 @@ export class BrowserSession {
   async detectWebMcpTools(): Promise<Array<{ frameId: number; name: string; description: string; inputSchema: unknown }>> {
     const out: Array<{ frameId: number; name: string; description: string; inputSchema: unknown }> = [];
     for (const f of this.page.frames()) {
+      // A policy-omitted frame's tools are attacker-controlled metadata from a
+      // document the policy excludes — never offer them.
+      if (f !== this.page.mainFrame() && this.frameAllowed && !this.frameAllowed(f.url())) continue;
       try {
         const tools = await withDeadline(
           f.evaluate(() => {
@@ -525,6 +547,12 @@ export class BrowserSession {
     const frame = frameId === 0 ? this.page.mainFrame() : this.frameById.get(frameId);
     if (!frame || frame.isDetached()) {
       return { ok: false, detail: `the frame that provided tool "${name}" is no longer on the page` };
+    }
+    // A frame can become disallowed after its id was handed out (the MCP session's
+    // origin anchor is set by the first navigate, or the frame itself navigated), so
+    // re-check here even though detection already skipped it — refuse, don't execute.
+    if (frameId !== 0 && this.frameAllowed && !this.frameAllowed(frame.url())) {
+      return { ok: false, detail: `the frame that provided tool "${name}" is on a policy-denied origin` };
     }
     try {
       // execute() is page code: the deadline turns a tool that never settles (a

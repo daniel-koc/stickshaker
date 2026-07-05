@@ -362,6 +362,42 @@ describe("shadow DOM (composed-tree piercing)", () => {
   });
 });
 
+describe("frame policy filter (frameAllowed)", () => {
+  it("omits a filtered frame's elements and text with a visible note; allowed frames unaffected", async () => {
+    const fb = await BrowserSession.launch({ headless: true, frameAllowed: (u) => !u.includes("/panel2") });
+    try {
+      await fb.navigate(`${site.ok}/framehost`);
+      const s = await fb.snapshot();
+      assert.ok(!s.text.includes("GIRAFFE"), "filtered frame's text omitted");
+      assert.ok(!s.elements.some((e) => e.name === "Cross button"), "filtered frame's elements omitted");
+      assert.match(s.text, /omitted by policy/, "omission is visible, not silent");
+      assert.match(s.text, /same-origin panel text ZEBRA/, "allowed frame still captured");
+      assert.ok(s.elements.some((e) => e.name === "Reveal panel"), "allowed frame still enumerated");
+    } finally {
+      await fb.close();
+    }
+  });
+
+  it("never offers a filtered frame's WebMCP tools, and refuses a call if the frame becomes disallowed later", async () => {
+    let allow = true;
+    const fb = await BrowserSession.launch({ headless: true, frameAllowed: () => allow });
+    try {
+      await fb.navigate(`${site.ok}/webmcp-framed`);
+      const framed = (await fb.detectWebMcpTools()).find((t) => t.name === "frame_tool");
+      assert.ok(framed && framed.frameId > 0, "frame tool visible while allowed");
+      // The frame becomes disallowed after its id was handed out (the MCP origin
+      // anchor being set by the first navigate is the real-world version of this).
+      allow = false;
+      assert.ok(!(await fb.detectWebMcpTools()).some((t) => t.name === "frame_tool"), "tool no longer offered");
+      const r = await fb.callWebMcpTool(framed.frameId, "frame_tool", { x: 1 });
+      assert.equal(r.ok, false);
+      assert.match(r.detail, /policy-denied origin/);
+    } finally {
+      await fb.close();
+    }
+  });
+});
+
 describe("goBack", () => {
   it("reports ok:false when there is no history", async () => {
     const fresh = await BrowserSession.launch({ headless: true });

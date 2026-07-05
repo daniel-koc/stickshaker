@@ -143,9 +143,12 @@ describe("evaluateAction", () => {
 });
 
 describe("evaluateDestination", () => {
-  it("always allows about:blank (even under sameOriginOnly + allowlist)", () => {
+  it("always allows about:blank and about:srcdoc (even under sameOriginOnly + allowlist)", () => {
     const p: Policy = { sameOriginOnly: true, domains: { allow: ["ok.test"] } };
     assert.equal(evaluateDestination(p, "about:blank", "http://ok.test").effect, "allow");
+    // srcdoc frames carry parent-authored inline content; excluding them under an
+    // allowlist would spuriously omit same-trust content from snapshots.
+    assert.equal(evaluateDestination(p, "about:srcdoc", "http://ok.test").effect, "allow");
   });
 
   it("denies a denied domain landing", () => {

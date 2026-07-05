@@ -39,6 +39,9 @@ before(async () => {
         return `<html><body><h1>Away page</h1></body></html>`;
       case "/bounce":
         return `<html><body><script>location.href='${site.away}/denied'</script></body></html>`;
+      case "/frame-denied":
+        return `<html><body><h1>Host page</h1><p>host fact 4242</p>
+          <iframe src="${site.away}/denied"></iframe></body></html>`;
       case "/tools":
         return `<html><body><h1>Order desk</h1><script>
           if (window.agent) window.agent.provideContext({ tools: [{
@@ -184,6 +187,23 @@ describe("policy enforcement in the loop", () => {
     });
     assert.equal(r.status, "failed");
     assert.match(r.message, /consecutive policy-blocked/);
+  });
+
+  it("omits a denied-origin iframe's content from every snapshot under an allowlist", async () => {
+    ollama.script = [{ name: "done", args: { answer: "done" } }];
+    const r = await runAgent({
+      ...opts(),
+      task: "t",
+      startUrl: `${site.ok}/frame-denied`,
+      policy: { domains: { allow: ["127.0.0.1"] } },
+      traceDir: tmp,
+    });
+    assert.equal(r.status, "done");
+    const obs = observations(r.runDir!);
+    assert.ok(obs.length > 0);
+    assert.ok(!obs.some((b) => b.includes("SECRET-DENIED")), "denied frame's text never reached the model");
+    assert.match(obs[0]!, /omitted by policy/, "the omission is visible in the observation");
+    assert.match(obs[0]!, /host fact 4242/, "the allowed host page still renders");
   });
 
   it("pulls back a click that landed on a denied host and never shows its content", async () => {

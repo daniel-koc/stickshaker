@@ -340,20 +340,25 @@ export class BrowserSession {
     try {
       const result = await this.page.evaluate(
         async ({ n, a }) => {
+          // The result string is page-controlled: cap it in the page world so a
+          // hostile tool can't ship megabytes across the boundary, ballooning the
+          // observation (and with it every later model call).
+          const cap = (s: string): string => (s.length > 4000 ? s.slice(0, 4000) : s);
           const g = globalThis as unknown as { __webmcp_tools?: Record<string, { execute: (x: unknown) => unknown }> };
           const tool = g.__webmcp_tools?.[n];
           if (!tool) return { ok: false, detail: `no page tool named "${n}"` };
           const res = await tool.execute(a);
           if (res && typeof res === "object") {
             const r = res as { ok?: boolean; message?: string };
-            return { ok: r.ok !== false, detail: String(r.message ?? JSON.stringify(res)) };
+            return { ok: r.ok !== false, detail: cap(String(r.message ?? JSON.stringify(res))) };
           }
-          return { ok: true, detail: String(res) };
+          return { ok: true, detail: cap(String(res)) };
         },
         { n: name, a: args },
       );
       await this.settle();
-      return result as ActionResult;
+      const r = result as ActionResult;
+      return r.detail.length > 2000 ? { ok: r.ok, detail: r.detail.slice(0, 2000) + "… [result truncated]" } : r;
     } catch (e) {
       return { ok: false, detail: `webmcp call "${name}" failed: ${errMsg(e)}` };
     }

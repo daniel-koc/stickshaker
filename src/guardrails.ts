@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
+import { z } from "zod";
 
 /**
  * Declarative, out-of-model action policy. The LLM proposes actions; this engine,
@@ -32,9 +33,31 @@ export interface ActionContext {
   taskOrigin?: string | undefined;
 }
 
+// Structural validation with unknown-key rejection: a policy is a security
+// control, so a typo ("domain:", "sameoriginonly:") or a mistyped value
+// ("maxSteps: ten") must fail loudly at load time, not silently enforce nothing.
+const PolicySchema = z.strictObject({
+  domains: z.strictObject({
+    allow: z.array(z.string()).optional(),
+    deny: z.array(z.string()).optional(),
+  }).optional(),
+  sameOriginOnly: z.boolean().optional(),
+  requireApproval: z.array(z.string()).optional(),
+  block: z.array(z.string()).optional(),
+  budgets: z.strictObject({
+    maxSteps: z.number().int().positive().optional(),
+    maxCostUsd: z.number().positive().optional(),
+  }).optional(),
+});
+
 export function loadPolicy(path: string): Policy {
-  const parsed = parseYaml(readFileSync(path, "utf8")) as Policy | null;
-  return parsed ?? {};
+  const parsed: unknown = parseYaml(readFileSync(path, "utf8"));
+  const res = PolicySchema.safeParse(parsed ?? {});
+  if (!res.success) {
+    const issues = res.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
+    throw new Error(`invalid policy file ${path} — ${issues}`);
+  }
+  return res.data as Policy;
 }
 
 function hostOf(url: string): string | null {
@@ -86,6 +109,12 @@ export function evaluateAction(policy: Policy, ctx: ActionContext): Decision {
   if (host && policy.domains?.deny?.some((p) => globMatch(p, host))) {
     return { effect: "deny", reason: `domain "${host}" is denied by policy` };
   }
+  // A host-less navigation target (data:, blob:, javascript:) can never match an
+  // allowlist, so under one it is denied — otherwise data: URLs would be a way to
+  // load arbitrary attacker-shaped pages that no host glob can ever cover.
+  if (policy.domains?.allow?.length && ctx.tool === "navigate" && !host && targetUrl !== "about:blank") {
+    return { effect: "deny", reason: `"${targetUrl.slice(0, 80)}" has no host and cannot match the domain allowlist` };
+  }
   if (policy.domains?.allow?.length && host && !policy.domains.allow.some((p) => globMatch(p, host))) {
     return { effect: "deny", reason: `domain "${host}" is not in the policy allowlist` };
   }
@@ -107,10 +136,18 @@ export function evaluateAction(policy: Policy, ctx: ActionContext): Decision {
  * before the action ran.
  */
 export function evaluateDestination(policy: Policy, url: string, taskOrigin?: string): Decision {
+  // The initial empty document. Popups start here, and benign pages open a blank
+  // tab and write into it; there is no content and no host, so treating it as
+  // "cross-origin at null" would false-positive on an everyday pattern.
+  if (url === "about:blank") return { effect: "allow" };
   const host = hostOf(url);
   const origin = originOf(url);
   if (host && policy.domains?.deny?.some((p) => globMatch(p, host))) {
     return { effect: "deny", reason: `landed on denied domain "${host}"` };
+  }
+  if (policy.domains?.allow?.length && !host) {
+    // data:, blob:, javascript: — no host can ever match an allowlist.
+    return { effect: "deny", reason: `landed on "${url.slice(0, 80)}", which has no host and cannot match the domain allowlist` };
   }
   if (policy.domains?.allow?.length && host && !policy.domains.allow.some((p) => globMatch(p, host))) {
     return { effect: "deny", reason: `landed on "${host}", which is not in the policy allowlist` };

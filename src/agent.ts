@@ -415,9 +415,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       // offending popups — so nothing lands on a denied or unapproved origin.
       {
         const popupUrls = await browser.drainPopups();
-        const mainDenied = cur.url !== prevUrl && isGuardedTool(toolUse.name)
-          ? await resolveDestination(cur.url, input, toolUse.name)
-          : undefined;
+        let mainDenied: string | undefined;
+        if (cur.url !== prevUrl && isGuardedTool(toolUse.name)) {
+          // A navigate that landed on the origin it requested was already vetted
+          // (and possibly operator-approved) by the pre-action gate — re-checking
+          // would re-prompt for the same navigation. Only a redirect that moved to
+          // a DIFFERENT origin needs the post-check.
+          const requestedOrigin = toolUse.name === "navigate" ? safeOrigin(String(input.url ?? "")) : undefined;
+          if (!(requestedOrigin && safeOrigin(cur.url) === requestedOrigin)) {
+            mainDenied = await resolveDestination(cur.url, input, toolUse.name);
+          }
+        }
         let popupDenied: string | undefined;
         for (const u of popupUrls) {
           popupDenied = await resolveDestination(u, { url: u }, toolUse.name);
@@ -426,17 +434,28 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
         if (mainDenied || popupDenied) {
           let recovered = cur;
           let pulledBack = false;
-          if (mainDenied) {
+          // Pull back until an allowed page: a single action can leave several
+          // denied history entries (a pushState chain on the denied host), so one
+          // goBack can land somewhere just as disallowed as where we started.
+          let landingDenied = Boolean(mainDenied);
+          for (let hop = 0; hop < 3 && landingDenied; hop++) {
             const back = await browser.goBack();
-            pulledBack = back.ok;
-            if (back.ok) recovered = await browser.snapshot();
+            if (!back.ok) break;
+            pulledBack = true;
+            recovered = await browser.snapshot();
+            landingDenied = evaluateDestination(policy, recovered.url, taskOrigin).effect !== "allow";
           }
           consecutiveBlocks++;
           if (opts.mode === "diff") keyframeGroup++;
           const reasons = [mainDenied && `main tab (${mainDenied})`, popupDenied && `new tab (${popupDenied})`].filter(Boolean).join("; ");
           recorder?.event("guardrail", { step, tool: toolUse.name, effect: "deny", reason: reasons, stage: "post_navigation", pulledBack, popupsClosed: popupUrls.length });
-          const recoveryNote = mainDenied ? (pulledBack ? " You were returned to the previous page." : " Could not return automatically; you may still be on the blocked page.") : "";
-          const body = `BLOCKED BY POLICY (after navigation): ${reasons}.${recoveryNote} Do not retry this route; choose a compliant action or call fail.\n\nCurrent page (full snapshot):\n${formatFull(recovered)}`;
+          const recoveryNote = mainDenied ? (pulledBack && !landingDenied ? " You were returned to the previous page." : " Could not return to an allowed page automatically.") : "";
+          // Never hand the model content from a page the policy denies — if the
+          // pull-back could not reach an allowed page, show only where we are.
+          const shownState = landingDenied
+            ? `Current page: ${recovered.url} — its content is withheld by policy. Navigate to an allowed page or call fail.`
+            : `Current page (full snapshot):\n${formatFull(recovered)}`;
+          const body = `BLOCKED BY POLICY (after navigation): ${reasons}.${recoveryNote} Do not retry this route; choose a compliant action or call fail.\n\n${shownState}`;
           addObservation(body, toolUse.id, true);
           recorder?.event("observation", { step, kind: "full", url: recovered.url, title: recovered.title, chars: body.length, body });
           await recorder?.screenshot(browser.page, step);
@@ -565,6 +584,15 @@ async function execAction(
 /** True for an HTTP 400 from the Anthropic API (e.g. a rejected tool schema). */
 function isBadRequest(e: unknown): boolean {
   return (e as { status?: number } | null)?.status === 400;
+}
+
+/** Origin of a URL, or undefined when it doesn't parse. */
+function safeOrigin(url: string): string | undefined {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Coerce a page-supplied tool name into the Anthropic grammar (`^[a-zA-Z0-9_-]{1,64}$`). */

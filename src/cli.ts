@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command, InvalidArgumentError } from "commander";
 import { BrowserSession } from "./browser.js";
@@ -152,7 +154,9 @@ program
     });
     reportSummary(result);
     console.log(result.message);
-    process.exit(exitCodeFor(result.status));
+    // exitCode + natural exit, not process.exit(): an immediate exit can drop
+    // buffered stdout when it is a pipe (the message would vanish under `| tee`).
+    process.exitCode = exitCodeFor(result.status);
   });
 
 program
@@ -166,7 +170,14 @@ program
   .option("--approve <mode>", "how to handle actions needing approval: auto | prompt | deny", parseApproveMode, "prompt")
   .option("--headed", "show the browser window", false)
   .action(async (runDir: string, opts: { maxSteps: number; keyframeInterval: number; traceDir: string; policy?: string; approve: ApproveMode; headed: boolean }) => {
-    requireKey();
+    // A run recorded with --router local resumes keyless, like `run` allows.
+    let recordedRouter: string | undefined;
+    try {
+      recordedRouter = (JSON.parse(readFileSync(join(runDir, "run.json"), "utf8")) as { router?: string }).router;
+    } catch {
+      /* missing/unreadable run.json — resumeRun reports it properly below */
+    }
+    if (recordedRouter !== "local") requireKey();
     console.error(`▶ resuming: ${runDir}`);
     const result = await resumeRun(runDir, {
       maxSteps: opts.maxSteps,
@@ -179,7 +190,7 @@ program
     });
     reportSummary(result);
     console.log(result.message);
-    process.exit(exitCodeFor(result.status));
+    process.exitCode = exitCodeFor(result.status);
   });
 
 program
@@ -311,7 +322,8 @@ program
       const nav = await browser.navigate(opts.url);
       if (!nav.ok) {
         console.error(nav.detail);
-        process.exit(1);
+        process.exitCode = 1; // not process.exit(): that would skip the finally and leak the browser
+        return;
       }
       console.log(formatFull(await browser.snapshot()));
     } finally {

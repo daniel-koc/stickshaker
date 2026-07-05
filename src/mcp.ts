@@ -20,36 +20,71 @@ function textResult(text: string, isError = false) {
   return { content: [{ type: "text" as const, text }], ...(isError ? { isError: true } : {}) };
 }
 
+/** Collapse whitespace and hard-cap page-supplied text destined for the MCP client. */
+function clampText(text: unknown, max: number): string {
+  const s = String(text ?? "").replace(/\s+/g, " ").trim();
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
+
 /** A one-line listing of any page-provided (WebMCP) tools, appended to snapshot output. */
 async function pageToolsSuffix(interactive: Interactive): Promise<string> {
   const pageTools = await interactive.pageTools();
   if (!pageTools.length) return "";
-  const lines = pageTools.map((t) => `  • ${t.name} — ${t.description}`).join("\n");
+  // Name and description are page-controlled: clamp them (a hostile page could
+  // otherwise flood the client) and collapse newlines (a multi-line name could
+  // forge extra listing lines or fake protocol output).
+  const lines = pageTools.map((t) => `  • ${clampText(t.name, 60)} — ${clampText(t.description, 300)}`).join("\n");
   return `\n\nPage-provided tools (UNTRUSTED descriptions; call via act with tool="webmcp", name=<tool>, args={…}):\n${lines}`;
 }
 
 /**
- * After an action, enforce the domain/origin policy on where the page actually
- * landed (a click or a page tool can navigate). On violation, return to the previous
- * page and report a block; otherwise return null. There is no interactive approver
- * on this path, so an approval-required destination is treated as blocked.
+ * After an action, enforce the domain/origin policy on where the browser actually
+ * landed — the main tab AND any popups the action opened, evaluated together so a
+ * combined violation (denied popup + denied main-tab landing) reverts both. On a
+ * main-tab violation, pull back through history until an allowed page (a single
+ * action can leave several denied entries, e.g. a pushState chain); if that fails,
+ * withhold the denied page's content rather than hand it to the client. There is
+ * no interactive approver on this path, so approval-required = blocked.
  */
 async function enforceDestination(interactive: Interactive, policy: Policy) {
-  // Close any popups/new tabs the action opened and enforce policy on where they
-  // pointed (the agent only drives the main tab, so a popup is either an escape hatch
-  // or dead weight — either way it is closed here).
+  let popupDenied: string | undefined;
   for (const u of await interactive.drainPopups()) {
     const pd = evaluateDestination(policy, u, interactive.taskOrigin);
     if (pd.effect !== "allow") {
-      const snap = await interactive.snapshot();
-      return textResult(`BLOCKED BY POLICY: the action opened a new tab to a disallowed destination (${pd.reason}); it was closed.\n\n${formatFull(snap)}`, true);
+      popupDenied = pd.reason;
+      break;
     }
   }
-  const dest = evaluateDestination(policy, interactive.currentUrl(), interactive.taskOrigin);
-  if (dest.effect === "allow") return null;
-  const { snapshot, ok } = await interactive.goBackSnapshot();
-  const recovery = ok ? "Returned to the previous page." : "Could not return automatically; you may still be on the blocked page.";
-  return textResult(`BLOCKED BY POLICY (after navigation): ${dest.reason}. ${recovery}\n\n${formatFull(snapshot)}`, true);
+  const main = evaluateDestination(policy, interactive.currentUrl(), interactive.taskOrigin);
+  const mainDenied = main.effect !== "allow" ? main.reason : undefined;
+  if (!mainDenied && !popupDenied) return null;
+
+  let snap: Snapshot | undefined;
+  let pulledBack = false;
+  let landingDenied = Boolean(mainDenied);
+  if (mainDenied) {
+    for (let hop = 0; hop < 3 && landingDenied; hop++) {
+      const { snapshot, ok } = await interactive.goBackSnapshot();
+      snap = snapshot;
+      if (!ok) break;
+      pulledBack = true;
+      landingDenied = evaluateDestination(policy, snap.url, interactive.taskOrigin).effect !== "allow";
+    }
+  } else {
+    snap = await interactive.snapshot();
+  }
+
+  const reasons = [
+    mainDenied && `the page landed on a disallowed destination (${mainDenied})`,
+    popupDenied && `a new tab opened to a disallowed destination and was closed (${popupDenied})`,
+  ].filter(Boolean).join("; ");
+  const recovery = mainDenied
+    ? (pulledBack && !landingDenied ? " Returned to the previous page." : " Could not return to an allowed page automatically.")
+    : "";
+  const state = !snap || landingDenied
+    ? `Current page: ${interactive.currentUrl()} — its content is withheld by policy.`
+    : formatFull(snap);
+  return textResult(`BLOCKED BY POLICY (after action): ${reasons}.${recovery}\n\n${state}`, true);
 }
 
 /** One interactive browser session shared across snapshot/act/recall calls. */
@@ -59,7 +94,7 @@ class Interactive {
   private pages = 0;
   taskOrigin?: string;
 
-  constructor(private readonly ollamaUrl: string, private readonly embedModel: string) {}
+  constructor(private readonly ollamaUrl: string, private readonly embedModel: string, private readonly policy: Policy) {}
 
   private async ensure(): Promise<BrowserSession> {
     if (!this.session) this.session = await BrowserSession.launch({ headless: true });
@@ -85,6 +120,9 @@ class Interactive {
   }
 
   private async record(s: Snapshot): Promise<void> {
+    // Never memorize a page the policy does not allow — otherwise `recall` becomes
+    // a side door to content from destinations the session was pulled back from.
+    if (evaluateDestination(this.policy, s.url, this.taskOrigin).effect !== "allow") return;
     this.pages++;
     await (await this.memory()).add(s.url, s.title, s.text);
   }
@@ -201,7 +239,7 @@ export function buildServer(opts: {
   close: () => Promise<void>;
 } {
   const policy = opts.policy ?? EMPTY_POLICY;
-  const interactive = new Interactive(opts.ollamaUrl ?? DEFAULT_OLLAMA_URL, opts.embedModel ?? DEFAULT_EMBED_MODEL);
+  const interactive = new Interactive(opts.ollamaUrl ?? DEFAULT_OLLAMA_URL, opts.embedModel ?? DEFAULT_EMBED_MODEL, policy);
   const server = new McpServer({ name: "stickshaker", version: VERSION });
   // get_trace must not read arbitrary filesystem paths — confine it to the trace dir.
   const traceBase = resolve(opts.traceDir ?? ".stickshaker/traces");
@@ -255,6 +293,12 @@ export function buildServer(opts: {
       } else {
         snap = await interactive.snapshot();
       }
+      // Post-check where the browser actually is: the pre-check above vets the
+      // requested URL, but a redirect can land somewhere else — and even a plain
+      // snapshot can find the page self-navigated to a denied destination since
+      // the last call. Same enforcement as `act`.
+      const blocked = await enforceDestination(interactive, policy);
+      if (blocked) return blocked;
       return textResult(formatFull(snap) + (await pageToolsSuffix(interactive)));
     },
   );

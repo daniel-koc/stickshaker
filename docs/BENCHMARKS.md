@@ -3,9 +3,9 @@
 Reproducible measurements of what Stickshaker's design actually buys — claims
 backed by numbers you can regenerate with one command.
 
-> Status: first result. A single task is enough to establish the
-> mechanism; the full multi-task matrix (success rate, latency, cloud vs. local,
-> injection-block rate) comes later with the eval harness.
+> Each section is a self-contained claim with a one-command repro: incremental
+> diffs, hybrid routing, the automated eval + injection matrix, and cache-aware
+> history elision.
 
 ## Incremental diffs vs. full snapshots
 
@@ -82,11 +82,11 @@ difference). Averaging over repeated trials is what the eval harness below adds.
   eval harness below runs a fixture suite across models and snapshot modes.
 - **Success is operator-verified here**, not automated. Automated success grading
   arrives with the eval harness below.
-- **No prompt caching in either mode.** Caching would cut full mode's re-sent
-  history to ~0.1× on cache reads, narrowing the cost gap — but caching has a
-  5-minute TTL (lost across human-in-the-loop gaps) and history elision mutates
-  the prefix, which defeats caching. Reconciling elision with caching is a real
-  tension tracked for later; measuring raw tokens keeps this result clean.
+- **No prompt caching in this comparison.** `bench` runs with caching off so
+  this stays a raw-token measurement. Caching *and* elision are reconciled in
+  the prompt-caching section below (elision defeats naive caching by mutating
+  the prefix; the fix is to make elision boundary-aligned and place
+  breakpoints on the stable regions).
 
 ## Hybrid routing vs. cloud-only
 
@@ -96,7 +96,8 @@ to Claude completes the same task for materially less cloud cost.
 **How it's measured.** The identical task is run twice through the same agent:
 once `--router cloud` (every step on Claude) and once `--router hybrid` (local
 model first, escalate to Claude when it can't produce a usable action). Cost
-accrues only on cloud steps.
+accrues only on cloud steps, and both runs use `--no-cache` — like `bench` —
+so the comparison stays raw.
 
 **Setup.** Same form-fill task as the diff benchmark above. Cloud model
 `claude-sonnet-5`; local model `llama3.2` (3B) via Ollama, CPU.
@@ -116,7 +117,7 @@ Claude — **68% lower cost, 77% fewer cloud input tokens**, same step count, sa
 ```bash
 pnpm stickshaker run "Type 'Stickshaker' into the first text field, choose 'Two' in the dropdown select menu, then click Submit and report the confirmation message." \
   --url https://www.selenium.dev/selenium/web/web-form.html \
-  --router hybrid --local-model llama3.2 --model claude-sonnet-5
+  --router hybrid --local-model llama3.2 --model claude-sonnet-5 --no-cache
 ```
 
 ### The accuracy tradeoff (honest)
@@ -249,3 +250,65 @@ is the obvious next lever.
   OpenAI-compatible cloud backend would slot into the router to add one.
 - **Single run per cell.** Deterministic fixtures remove *page* variance, but LLM
   nondeterminism remains; repeated trials would tighten the numbers.
+
+## Cache-aware history elision (prompt caching)
+
+**Claim:** prompt caching re-bills the re-sent conversation prefix at ~0.1×
+instead of full price every turn — but naive caching is *defeated* by history
+elision, because collapsing an old observation to a placeholder mutates the
+prefix and invalidates the cache from that point. Reconciling the two cuts input
+cost substantially at identical outcomes.
+
+**The tension, and the fix.** A browser-agent run re-sends the whole conversation
+every step; that re-sent history is the dominant input cost. Anthropic's prompt
+caching matches the longest identical *prefix* against a cached one and bills it
+at ~0.1× (reads) / ~1.25× (writes). Two things had to change together:
+
+1. **Boundary-aligned elision.** Elision now happens *eagerly at the keyframe*
+   that closes a hot window, not lazily on the next step. So the moment we place a
+   cache breakpoint at the elided-history boundary, the prefix behind it is already
+   final — a stable, cacheable region that survives future keyframe elisions.
+   (Elision was always idempotent and forward-only; this just makes the stable
+   point explicit.)
+2. **Three breakpoints, graceful degradation.** One on the preamble (tools +
+   system, always static), one on the elided-history boundary (stable across
+   keyframes), one on the last message (the whole conversation, for the common
+   append-only step). Reads are automatic — the API takes the longest matching
+   prefix — so even on a keyframe step, where the newest content changed, the
+   preamble and elided history still hit.
+
+**Measured** (`claude-sonnet-5`, diff mode; `--no-cache` vs default):
+
+```
+one 4-step task (login):     $0.0327 → $0.0110   (66% lower cost)
+full 12-task suite (1 proc): $0.2881 → $0.1382   (52% lower cost)
+                             p95 step latency 7315 ms → 1800 ms
+```
+
+On the single run the win is pure **within-run** caching: step 1 writes the
+preamble + first observation; steps 2–4 read them at ~0.1×. On the full suite it
+compounds with **cross-request** reuse — twelve tasks in one 5-minute window share
+the cached preamble — which is why the aggregate percentage is real but *not* the
+per-task figure. The 66% single-run number is the honest "what one task saves,"
+and it grows with step count (more history to re-read cheaply).
+
+**Reproduce:**
+
+```bash
+pnpm stickshaker eval --model claude-sonnet-5 --only login --no-cache   # baseline
+pnpm stickshaker eval --model claude-sonnet-5 --only login              # cached
+```
+
+### Caveats (honest scope)
+
+- **Cache writes cost 1.25×.** Content written but never re-read is a small net
+  loss; the win comes from the preamble and elided history being read many times.
+  On a strictly single-step task caching is roughly break-even (write, never
+  re-read within the run) — the gain is in multi-step runs and repeated calls.
+- **5-minute TTL, ~1024-token minimum.** A cached prefix expires after 5 min (lost
+  across a long human-in-the-loop gap) and a segment under ~1024 tokens isn't
+  cached at all — so tiny contexts see no effect. Both degrade gracefully (a miss
+  just bills full price, as before).
+- **`bench` stays uncached** so the diff-vs-full comparison above remains a clean
+  raw-token measurement. Caching layers on top of diff mode, not instead of it:
+  diff mode shrinks what gets re-sent, caching discounts what still is.

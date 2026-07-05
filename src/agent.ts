@@ -55,6 +55,8 @@ export interface AgentOptions {
   router?: RouterMode | undefined;
   localModel?: string | undefined;
   ollamaUrl?: string | undefined;
+  /** Prompt caching on cloud requests. Default true; disable to measure raw tokens. */
+  cache?: boolean | undefined;
   /** Path of the policy file, recorded in the trace so a resume can reload it. */
   policyPath?: string | undefined;
   /**
@@ -136,6 +138,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     system: SYSTEM,
     maxTokens: 4096,
     hasKey,
+    cache: opts.cache ?? true,
   });
   let cloudSteps = 0;
   let localSteps = 0;
@@ -145,6 +148,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
   const observations: { group: number; elide: () => void }[] = [];
   let keyframeGroup = 0;
+  // Index in `messages` of the last message before the current hot window (the most
+  // recent keyframe's full snapshot). Everything up to here is stable — elided or an
+  // assistant turn — so it's a durable prompt-cache breakpoint that survives across
+  // keyframe elisions. Starts at 0: the seed message, which never changes.
+  let cacheBoundary = 0;
   let result: AgentResult | undefined;
 
   const ret = (status: AgentResult["status"], message: string, steps: number): AgentResult => {
@@ -174,6 +182,14 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       messages.push({ role: "user", content: [block] });
       observations.push({ group: keyframeGroup, elide: () => { block.content = ELIDED; } });
     }
+  };
+
+  // Collapse every observation from before the current keyframe to a placeholder so
+  // per-call context stays flat. Idempotent and forward-only (a block never un-elides),
+  // which is what lets the elided prefix be a stable prompt-cache breakpoint.
+  const elideStale = (): void => {
+    if (opts.mode !== "diff") return;
+    for (const o of observations) if (o.group < keyframeGroup) o.elide();
   };
 
   const policy = opts.policy ?? EMPTY_POLICY;
@@ -227,9 +243,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     await recorder?.screenshot(browser.page, 0);
 
     for (let step = 1; step <= maxSteps; step++) {
-      if (opts.mode === "diff") {
-        for (const o of observations) if (o.group < keyframeGroup) o.elide();
-      }
+      elideStale();
 
       // WebMCP: if the page exposes typed tools, offer them alongside click/type so
       // the model can prefer a direct call over actuation. Page-supplied metadata is
@@ -263,7 +277,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       const t0 = Date.now();
       let decision: Decision;
       try {
-        decision = await router.decide(messages, { tools: currentTools, forceCloud: escalateNext });
+        decision = await router.decide(messages, { tools: currentTools, forceCloud: escalateNext, cacheBoundaryIndex: cacheBoundary });
       } catch (e) {
         // The page-provided tools are the only untrusted part of the request, so if
         // the API rejects it (400) — e.g. a malformed tool schema that slipped past
@@ -273,7 +287,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
         if (pageTools.length && isBadRequest(e)) {
           recorder?.event("webmcp", { step, note: "API rejected the request; retried without page-provided tools" });
           log(`step ${step}: API rejected page tools — retrying without them`);
-          decision = await router.decide(messages, { tools, forceCloud: escalateNext });
+          decision = await router.decide(messages, { tools, forceCloud: escalateNext, cacheBoundaryIndex: cacheBoundary });
         } else {
           throw e;
         }
@@ -455,7 +469,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
             landingDenied = evaluateDestination(policy, recovered.url, taskOrigin).effect !== "allow";
           }
           consecutiveBlocks++;
-          if (opts.mode === "diff") keyframeGroup++;
+          if (opts.mode === "diff") {
+            keyframeGroup++;
+            elideStale();
+            cacheBoundary = messages.length - 1;
+          }
           const reasons = [mainDenied && `main tab (${mainDenied})`, popupDenied && `new tab (${popupDenied})`].filter(Boolean).join("; ");
           recorder?.event("guardrail", { step, tool: toolUse.name, effect: "deny", reason: reasons, stage: "post_navigation", pulledBack, popupsClosed: popupUrls.length });
           const recoveryNote = mainDenied ? (pulledBack && !landingDenied ? " You were returned to the previous page." : " Could not return to an allowed page automatically.") : "";
@@ -497,7 +515,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       let observation: string;
       let kind: "full" | "diff";
       if (isKeyframe) {
-        if (opts.mode === "diff") keyframeGroup++;
+        if (opts.mode === "diff") {
+          keyframeGroup++;
+          // Elide the just-closed hot window NOW, not lazily next step, so the cache
+          // boundary marked below already points at a fully stable prefix.
+          elideStale();
+          cacheBoundary = messages.length - 1;
+        }
         observation = `Current page (full snapshot):\n${formatFull(cur)}`;
         kind = "full";
         stepsSinceKeyframe = 0;

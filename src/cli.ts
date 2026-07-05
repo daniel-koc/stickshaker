@@ -84,6 +84,10 @@ function reportSummary(result: AgentResult): void {
   console.error(
     `● tokens: in ${result.usage.inputTokens} / out ${result.usage.outputTokens}   ≈ $${result.costUsd.toFixed(4)}`,
   );
+  const { cacheReadTokens, cacheCreationTokens } = result.usage;
+  if (cacheReadTokens || cacheCreationTokens) {
+    console.error(`● prompt cache: ${cacheReadTokens} read (billed ~0.1×) / ${cacheCreationTokens} written (~1.25×)`);
+  }
   if (result.routing) {
     const r = result.routing;
     console.error(`● routing: ${r.mode} — ${r.localSteps} local / ${r.cloudSteps} cloud steps (cost above is cloud only)`);
@@ -118,6 +122,7 @@ program
   .option("--approve <mode>", "how to handle actions needing approval: auto | prompt | deny", parseApproveMode, "prompt")
   .option("--trace-dir <dir>", "directory for run traces", ".stickshaker/traces")
   .option("--no-trace", "disable trace recording")
+  .option("--no-cache", "disable prompt caching (cloud steps bill full input every turn)")
   .option("--headed", "show the browser window instead of running headless", false)
   .action(async (task: string, opts: {
     url?: string;
@@ -132,6 +137,7 @@ program
     approve: ApproveMode;
     traceDir: string;
     trace: boolean;
+    cache: boolean;
     headed: boolean;
   }) => {
     if (opts.router !== "local") requireKey();
@@ -147,6 +153,7 @@ program
       localModel: opts.localModel,
       ollamaUrl: opts.ollamaUrl,
       headless: !opts.headed,
+      cache: opts.cache,
       traceDir: opts.trace ? opts.traceDir : undefined,
       ...(opts.policy ? { policy: loadPolicy(opts.policy), policyPath: opts.policy } : {}),
       approve: makeApprover(opts.approve),
@@ -241,6 +248,9 @@ program
           maxSteps: opts.maxSteps,
           keyframeInterval: opts.keyframeInterval,
           headless: true,
+          // Off here so this stays a raw-token comparison: caching would bill the
+          // re-sent history at ~0.1×, muddying the diff-vs-full input-token delta.
+          cache: false,
           onStep: (line) => console.error("  " + line),
         }),
       );
@@ -280,7 +290,8 @@ program
   .option("--local-model <name>", "Ollama model for local/hybrid routing", "llama3.2")
   .option("--ollama-url <url>", "Ollama base URL", "http://localhost:11434")
   .option("--only <ids>", "comma-separated task ids to run (default: all)")
-  .action(async (opts: { router: RouterMode; mode: RunMode; model: string; localModel: string; ollamaUrl: string; only?: string }) => {
+  .option("--no-cache", "disable prompt caching (measure raw input cost)")
+  .action(async (opts: { router: RouterMode; mode: RunMode; model: string; localModel: string; ollamaUrl: string; only?: string; cache: boolean }) => {
     if (opts.router !== "local") requireKey();
     const only = opts.only ? new Set(opts.only.split(",").map((s) => s.trim())) : null;
     const tasks = only ? TASKS.filter((t) => only.has(t.id)) : TASKS;
@@ -288,9 +299,9 @@ program
       console.error("no matching task ids");
       process.exit(1);
     }
-    console.error(`▶ eval: ${tasks.length} tasks   [router: ${opts.router}, mode: ${opts.mode}, model: ${opts.model}]`);
+    console.error(`▶ eval: ${tasks.length} tasks   [router: ${opts.router}, mode: ${opts.mode}, model: ${opts.model}, cache: ${opts.cache}]`);
     const results = await runEval(
-      { router: opts.router, mode: opts.mode, model: opts.model, localModel: opts.localModel, ollamaUrl: opts.ollamaUrl },
+      { router: opts.router, mode: opts.mode, model: opts.model, localModel: opts.localModel, ollamaUrl: opts.ollamaUrl, cache: opts.cache },
       tasks,
       (line) => console.error(line),
     );
@@ -308,7 +319,10 @@ program
     console.log(`success rate:      ${s.taskPass}/${s.taskCount} (${(s.successRate * 100).toFixed(0)}%)`);
     console.log(`injection blocked: ${s.injectionBlocked}/${s.injectionCount} (${(s.injectionBlockRate * 100).toFixed(0)}%)`);
     console.log(`avg steps: ${s.avgSteps.toFixed(1)}   cloud input tokens: ${s.totalCloudInput}   total cost: $${s.totalCost.toFixed(4)}   p95 step latency: ${s.p95LatencyMs} ms`);
-    console.log(`config: router=${opts.router} mode=${opts.mode} model=${opts.model}${opts.router !== "cloud" ? ` local=${opts.localModel}` : ""}`);
+    if (s.totalCacheRead || s.totalCacheWrite) {
+      console.log(`prompt cache: ${s.totalCacheRead} read (~0.1×) / ${s.totalCacheWrite} written (~1.25×)`);
+    }
+    console.log(`config: router=${opts.router} mode=${opts.mode} model=${opts.model} cache=${opts.cache}${opts.router !== "cloud" ? ` local=${opts.localModel}` : ""}`);
   });
 
 program

@@ -43,9 +43,9 @@ those is a systems mistake, and each has a systems fix here:
 - **Replayable traces beat verbose logs.** Every run is an append-only JSONL
   trace + a screenshot per step + OpenTelemetry spans, baked into a single
   offline HTML report. Interrupted runs are detectable and resumable.
-- **Cost is a dial, not a constant.** Hybrid routing runs cheap steps on a
-  local Ollama model, escalating to Claude only when it has to, so easy steps
-  are free and only the hard ones cost cloud tokens.
+- **Cost is a dial, not a constant.** Prompt caching re-bills the stable
+  prefix at ~0.1× (~66% cheaper on a multi-step run), and hybrid routing runs
+  cheap steps on a local Ollama model, escalating to Claude only when needed.
 - **The web is splitting in two.** Where a page exposes typed WebMCP tools,
   the agent calls them directly; on the legacy web it falls back to
   snapshot+act — one agent that speaks both dialects.
@@ -59,7 +59,7 @@ The full argument, with the numbers behind each claim, is in
 
 | Command | What it does |
 |---------|--------------|
-| `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
+| `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); prompt caching on by default (`--no-cache` to disable); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
 | `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (12 tasks + 7 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
@@ -396,33 +396,41 @@ pnpm stickshaker bench "Fill the first text field with 'Stickshaker', choose 'Tw
 cli.ts ──▶ agent.ts ──▶ browser.ts (Playwright Chromium)
               │  observe.ts: full snapshot (keyframe) or delta vs. previous
               │  ↓
-              └─▶ Claude (tool use: navigate / click / type / select / scroll / done / fail)
+              └─▶ Claude (tool use: navigate / click / type / select_option / scroll / go_back / done / fail)
                    one action per turn → execute → observe → repeat
 ```
 
-Every interactive element gets a **stable** `data-sk-ref` — a ref that stays on
-the DOM node across turns (and resets on navigation), so the same element keeps
-its number and successive snapshots can be diffed by ref. The snapshot spans
-the main frame **and every child frame** (iframes, same- and cross-origin):
-refs are frame-qualified (bare like `5` for the main frame, `f2:5` for an
-element inside a frame) and actuation routes each ref back to its owning frame,
-so the agent can click and type inside embedded content. Within each document
-the walk covers the **composed tree** — it descends into every open shadow
-root, so elements inside web components enumerate too (Playwright's locators
-pierce open roots, so the stamped refs stay actuatable; closed roots are the
-documented boundary). In `diff` mode the agent sends a full **keyframe** on the
-first turn, after any navigation, and every N steps (`--keyframe-interval`,
-default 5); in between it sends only added/changed/removed elements and a
-text-changed flag. Older observations are collapsed to placeholders so the
-per-call context stays flat instead of growing with every step. `--mode full`
-disables all of this to reproduce the full-snapshot baseline for benchmarking.
+Every interactive element gets a **stable** `data-sk-ref` — a ref that stays
+on the DOM node across turns (and resets on navigation), so the same element
+keeps its number and successive snapshots can be diffed by ref. The snapshot
+spans the main frame **and every child frame** (iframes, same- and
+cross-origin): refs are frame-qualified (bare like `5` for the main frame,
+`f2:5` for an element inside a frame) and actuation routes each ref back to
+its owning frame, so the agent can click and type inside embedded content.
+Within each document the walk covers the **composed tree** — it descends into
+every open shadow root, so elements inside web components enumerate too
+(Playwright's locators pierce open roots, so the stamped refs stay
+actuatable; closed roots are the documented boundary).
+
+In `diff` mode the agent sends a full **keyframe** on the first turn, after
+any navigation, and every N steps (`--keyframe-interval`, default 5); in
+between it sends only added/changed/removed elements and a text-changed flag.
+Older observations are collapsed to placeholders so the per-call context
+stays flat instead of growing with every step — and that collapse is done
+**boundary-aligned** (eagerly at each keyframe) so the elided history stays a
+byte-stable prefix, which is what lets **prompt caching** re-bill it at ~0.1×
+instead of full price every turn (breakpoints sit on the preamble, the
+elided-history boundary, and the last message). `--mode full` disables the
+diffing to reproduce the full-snapshot baseline for benchmarking.
 
 ## Flight recorder
 
 Tracing is on by default for the autonomous-agent paths — CLI `run`
 (`--no-trace` to disable), `resume`, and the MCP `browse_task` tool — and off
 for the measurement commands (`eval`, `bench`) and the step-by-step MCP
-`snapshot`/`act` session. Every traced run writes a directory under `.stickshaker/traces/`:
+`snapshot`/`act` session. Every traced run writes a directory under
+`.stickshaker/traces/`:
+
 ```
 .stickshaker/traces/<timestamp>_<task-slug>/
   trace.jsonl        append-only event log: LLM I/O, actions, results, observations, timings
@@ -435,9 +443,9 @@ for the measurement commands (`eval`, `bench`) and the step-by-step MCP
 `report.html` embeds the screenshots as data URIs, so it opens with no server
 and can be shared as a single file — this is the offline-debugging surface.
 Because `run.json` stays `"running"` until a run finishes cleanly, an
-interrupted run is detectable, and `stickshaker resume <run-dir>` restarts it:
-it restores the last page URL, hands the model a summary of the actions it
-already took, and continues (recording a fresh linked trace).
+interrupted run is detectable, and `stickshaker resume <run-dir>` restarts
+it: it restores the last page URL, hands the model a summary of the actions
+it already took, and continues (recording a fresh linked trace).
 
 ## Guardrails & injection defense
 
@@ -529,6 +537,7 @@ Every claim reproduces with one command — see
 | Claim | Measured |
 |-------|----------|
 | Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
+| Cache-aware history elision | **~66% lower cost** on a single multi-step run; suite p95 step latency 7315 → 1800 ms |
 | Eval suite (Sonnet) | **12/12 tasks, 7/7 injections blocked** — single run per cell |
 | Hybrid routing (4-task slice) | **~55% cheaper** than cloud-only, at 3/4 vs 4/4 — the cost/accuracy dial |
 
@@ -586,7 +595,7 @@ pnpm typecheck       # tsc --noEmit over src, tests, and scripts
 pnpm build           # compile to dist/
 ```
 
-`pnpm test` runs 150 tests through Node's built-in runner (no extra test
+`pnpm test` runs 157 tests through Node's built-in runner (no extra test
 framework) — **no API key needed and nothing talks to the cloud**. Pure units
 cover the policy engine, injection graders, snapshot diffing, the
 untrusted-text fence, vector memory, and cost accounting. Integration suites

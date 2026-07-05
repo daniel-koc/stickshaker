@@ -112,6 +112,8 @@ describe("summarize", () => {
     steps: 2,
     status: "done",
     cloudInputTokens: 100,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     costUsd: 0.01,
     localSteps: 0,
     cloudSteps: 2,

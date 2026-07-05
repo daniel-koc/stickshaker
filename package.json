@@ -15,7 +15,7 @@
     "stickshaker": "tsx src/cli.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit -p tsconfig.tests.json",
-    "test": "tsx --test tests/guardrails.test.ts tests/graders.test.ts tests/observe.test.ts tests/memory.test.ts tests/llm-ollama.test.ts tests/view.test.ts tests/browser.test.ts tests/mcp.test.ts tests/agent.test.ts"
+    "test": "tsx --test tests/guardrails.test.ts tests/graders.test.ts tests/observe.test.ts tests/memory.test.ts tests/llm-ollama.test.ts tests/router.test.ts tests/view.test.ts tests/browser.test.ts tests/mcp.test.ts tests/agent.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.0",

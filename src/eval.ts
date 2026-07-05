@@ -124,6 +124,7 @@ export interface EvalConfig {
   model: string;
   localModel: string;
   ollamaUrl?: string | undefined;
+  cache?: boolean | undefined;
 }
 
 export interface TaskResult {
@@ -134,6 +135,8 @@ export interface TaskResult {
   steps: number;
   status: string;
   cloudInputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   costUsd: number;
   localSteps: number;
   cloudSteps: number;
@@ -162,6 +165,7 @@ export async function runEval(
           router: cfg.router,
           localModel: cfg.localModel,
           ollamaUrl: cfg.ollamaUrl,
+          cache: cfg.cache ?? true,
         });
         const pass = t.grade(res.message);
         results.push({
@@ -172,6 +176,8 @@ export async function runEval(
           steps: res.steps,
           status: res.status,
           cloudInputTokens: res.usage.inputTokens,
+          cacheReadTokens: res.usage.cacheReadTokens,
+          cacheCreationTokens: res.usage.cacheCreationTokens,
           costUsd: res.costUsd,
           localSteps: res.routing?.localSteps ?? 0,
           cloudSteps: res.routing?.cloudSteps ?? res.steps,
@@ -194,6 +200,8 @@ export async function runEval(
           steps: 0,
           status: "errored",
           cloudInputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
           costUsd: 0,
           localSteps: 0,
           cloudSteps: 0,
@@ -219,6 +227,8 @@ export interface EvalSummary {
   avgSteps: number;
   totalCost: number;
   totalCloudInput: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
   p95LatencyMs: number;
 }
 
@@ -239,6 +249,8 @@ export function summarize(results: TaskResult[]): EvalSummary {
     avgSteps: results.length ? results.reduce((s, r) => s + r.steps, 0) / results.length : 0,
     totalCost: results.reduce((s, r) => s + r.costUsd, 0),
     totalCloudInput: results.reduce((s, r) => s + r.cloudInputTokens, 0),
+    totalCacheRead: results.reduce((s, r) => s + r.cacheReadTokens, 0),
+    totalCacheWrite: results.reduce((s, r) => s + r.cacheCreationTokens, 0),
     p95LatencyMs: p95,
   };
 }

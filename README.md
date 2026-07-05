@@ -16,11 +16,12 @@ Cursor, …) a policy-guarded browser via the
 > harness, and **WebMCP-hybrid** actuation — the agent prefers a page's typed
 > tools when it exposes them (Chrome origin-trial standard) and falls back to
 > snapshot+act on the legacy web. The snapshot pierces **iframes** (same- and
-> cross-origin) so the agent can act on elements inside embedded frames. On the
-> eval suite Claude Sonnet scores **10/10 tasks and blocks 3/3 injection
-> attacks** (including a poisoned WebMCP tool description); see
-> [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale is written up in
-> [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems problem."*
+> cross-origin) so the agent can act on elements — and call WebMCP tools —
+> inside embedded frames. On the eval suite Claude Sonnet scores **11/11 tasks
+> and blocks 3/3 injection attacks** (including a poisoned WebMCP tool
+> description); see [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale
+> is written up in [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems
+> problem."*
 
 ---
 
@@ -59,7 +60,7 @@ The full argument, with the numbers behind each claim, is in
 |---------|--------------|
 | `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
-| `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (10 tasks + 3 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
+| `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (11 tasks + 3 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
 | `stickshaker resume <run-dir>` | Continue an interrupted run from its trace. |
@@ -377,7 +378,7 @@ pnpm stickshaker run "Fill the form with 'hello' and submit" \
 pnpm stickshaker view .stickshaker/traces/<run-dir>
 pnpm stickshaker resume .stickshaker/traces/<run-dir>
 
-# The eval suite: 10 tasks + 3 injection attacks
+# The eval suite: 11 tasks + 3 injection attacks
 pnpm stickshaker eval --model claude-sonnet-5
 
 # Diff-vs-full token benchmark on any task
@@ -498,23 +499,21 @@ a dependency-free local hashing embedder, over an in-process cosine index.
 
 Chrome's [WebMCP](https://developer.chrome.com/docs/ai/webmcp) origin trial
 lets a page expose typed tools to agents (e.g. `place_order(product,
-quantity)`) instead of requiring click/type. Each turn, Stickshaker detects any
-tools the page has registered and offers them to the model alongside the
-built-in `click`/`type` tools, prefixed `webmcp_…`; the system prompt tells the
-model to **prefer** them. On a WebMCP-enabled page it calls the typed tool
-directly in one step; on the legacy web (no tools) it falls back to
-snapshot+act — one agent that speaks both. Page-provided tools are still
-subject to the guardrail policy, and their descriptions are treated as
-untrusted input — see the
+quantity)`) instead of requiring click/type. Each turn, Stickshaker detects
+any tools the page has registered — in the top document **and in every
+embedded frame** — and offers them to the model alongside the built-in
+`click`/`type` tools, prefixed `webmcp_…`; the system prompt tells the model
+to **prefer** them, and a call routes back to the frame that registered the
+tool. On a WebMCP-enabled page it calls the typed tool directly in one step;
+on the legacy web (no tools) it falls back to snapshot+act — one agent that
+speaks both. Page-provided tools are still subject to the guardrail policy,
+and their names, descriptions, and results are treated as untrusted input —
+see the
 [security-boundary](docs/DESIGN.md#4-the-model-is-not-a-security-boundary)
 and
 [WebMCP](docs/DESIGN.md#5-webmcp-will-split-the-web-in-two-so-the-runtime-must-be-hybrid)
-sections of DESIGN.md. The `webmcp` eval fixture demonstrates the path
-end to end.
-
-> **Demo capture:** `report.html` (from any traced run) is the visual artifact
-> — screenshots of every step, offline. For a README GIF, run with `--headed`
-> and screen-record, or capture Playwright's own video of the session.
+sections of DESIGN.md. The `webmcp` and `webmcp-frame` eval fixtures
+demonstrate both paths end to end.
 
 ---
 
@@ -526,7 +525,7 @@ Every claim reproduces with one command — see
 | Claim | Measured |
 |-------|----------|
 | Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
-| Eval suite (Sonnet) | **10/10 tasks, 3/3 injections blocked** — single run per cell |
+| Eval suite (Sonnet) | **11/11 tasks, 3/3 injections blocked** — single run per cell |
 | Hybrid routing (4-task slice) | **~55% cheaper** than cloud-only, at 3/4 vs 4/4 — the cost/accuracy dial |
 
 ---
@@ -583,7 +582,7 @@ pnpm typecheck       # tsc --noEmit over src, tests, and scripts
 pnpm build           # compile to dist/
 ```
 
-`pnpm test` runs 134 tests through Node's built-in runner (no extra test
+`pnpm test` runs 138 tests through Node's built-in runner (no extra test
 framework) — **no API key needed and nothing talks to the cloud**. Pure units
 cover the policy engine, injection graders, snapshot diffing, the
 untrusted-text fence, vector memory, and cost accounting. Integration suites

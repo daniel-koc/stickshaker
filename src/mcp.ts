@@ -199,12 +199,18 @@ class Interactive {
 
   async pageTools(): Promise<Array<{ name: string; description: string }>> {
     const b = await this.ensure();
-    return (await b.detectWebMcpTools()).map((t) => ({ name: t.name, description: t.description }));
+    // A tool from an embedded frame is listed frame-qualified ("fN:name"),
+    // mirroring element refs, so act tool="webmcp" can route it back.
+    return (await b.detectWebMcpTools()).map((t) => ({
+      name: t.frameId ? `f${t.frameId}:${t.name}` : t.name,
+      description: t.description,
+    }));
   }
 
   async callPageTool(name: string, args: Record<string, unknown>): Promise<{ result: ActionResult; snapshot: Snapshot }> {
     const b = await this.ensure();
-    const result = await b.callWebMcpTool(name, args);
+    const m = /^f(\d+):(.+)$/.exec(name);
+    const result = await b.callWebMcpTool(m ? Number(m[1]) : 0, m ? m[2]! : name, args);
     const s = await b.snapshot();
     await this.record(s);
     return { result, snapshot: s };
@@ -341,7 +347,9 @@ export function buildServer(opts: {
         const pageName = args.name ?? "";
         if (!pageName) return textResult('act tool="webmcp" requires a "name" (see the snapshot\'s page-provided tools list).', true);
         const toolArgs = (args.args ?? {}) as Record<string, unknown>;
-        const guardName = `webmcp_${pageName}`;
+        // Guard on the bare tool name (frame prefix stripped) so a policy entry
+        // like block: ["webmcp_order"] applies wherever the tool lives.
+        const guardName = `webmcp_${pageName.replace(/^f\d+:/, "")}`;
         if (isGuardedTool(guardName)) {
           const decision = evaluateAction(policy, { tool: guardName, input: toolArgs, currentUrl: interactive.currentUrl(), taskOrigin: interactive.taskOrigin });
           if (decision.effect !== "allow") return textResult(`BLOCKED BY POLICY: ${decision.reason}. Action not performed.`, true);

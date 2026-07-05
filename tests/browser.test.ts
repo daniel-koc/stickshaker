@@ -36,6 +36,20 @@ before(async () => {
         return `<html><body><h1>Landed</h1><button>onward</button></body></html>`;
       case "/popup":
         return `<html><body><button id="p" onclick="window.open('${site.away}/landed')">open</button></body></html>`;
+      case "/webmcp-framed":
+        return `<html><body><h1>Host</h1><script>
+          if (window.agent) window.agent.provideContext({ tools: [{
+            name: "host_tool", description: "h", inputSchema: { type: "object", properties: {} },
+            execute: function(){ return { ok: true, message: "host result" }; }
+          }]});
+        </script><iframe src="/webmcp-framed-inner"></iframe></body></html>`;
+      case "/webmcp-framed-inner":
+        return `<html><body><p>inner</p><script>
+          if (window.agent) window.agent.provideContext({ tools: [{
+            name: "frame_tool", description: "f", inputSchema: { type: "object", properties: { x: { type: "number" } } },
+            execute: function(a){ return { ok: true, message: "frame says " + a.x }; }
+          }]});
+        </script></body></html>`;
       case "/framehost":
         // A same-origin iframe (/panel) and a CROSS-origin one (localhost /panel2).
         return `<html><body><h1>Host</h1><p>outer host text</p>
@@ -281,24 +295,25 @@ describe("WebMCP bridge", () => {
     assert.deepEqual(names, ["add_numbers", "huge_result", "throws", "via_register"]);
     const add = tools.find((t) => t.name === "add_numbers");
     assert.equal(add?.description, "Adds a and b.");
+    assert.equal(add?.frameId, 0, "main-frame tools carry frameId 0");
     assert.equal((add?.inputSchema as { type?: string }).type, "object");
   });
 
   it("calls a page tool and returns its result", async () => {
     await b.navigate(`${site.ok}/webmcp`);
-    const r = await b.callWebMcpTool("add_numbers", { a: 2, b: 40 });
+    const r = await b.callWebMcpTool(0, "add_numbers", { a: 2, b: 40 });
     assert.deepEqual(r, { ok: true, detail: "sum=42" });
   });
 
   it("supports tools that return a plain string", async () => {
     await b.navigate(`${site.ok}/webmcp`);
-    const r = await b.callWebMcpTool("via_register", {});
+    const r = await b.callWebMcpTool(0, "via_register", {});
     assert.deepEqual(r, { ok: true, detail: "plain string result" });
   });
 
   it("caps a hostile giant result", async () => {
     await b.navigate(`${site.ok}/webmcp`);
-    const r = await b.callWebMcpTool("huge_result", {});
+    const r = await b.callWebMcpTool(0, "huge_result", {});
     assert.equal(r.ok, true);
     assert.ok(r.detail.length <= 2100, `detail length ${r.detail.length}`);
     assert.match(r.detail, /\[result truncated\]$/);
@@ -306,9 +321,31 @@ describe("WebMCP bridge", () => {
 
   it("reports unknown tools and page-side exceptions as failures, not throws", async () => {
     await b.navigate(`${site.ok}/webmcp`);
-    assert.equal((await b.callWebMcpTool("no_such_tool", {})).ok, false);
-    const boom = await b.callWebMcpTool("throws", {});
+    assert.equal((await b.callWebMcpTool(0, "no_such_tool", {})).ok, false);
+    const boom = await b.callWebMcpTool(0, "throws", {});
     assert.equal(boom.ok, false);
     assert.match(boom.detail, /failed/);
+  });
+
+  it("detects tools registered inside a child frame and routes the call to that frame", async () => {
+    await b.navigate(`${site.ok}/webmcp-framed`);
+    const tools = await b.detectWebMcpTools();
+    const host = tools.find((t) => t.name === "host_tool");
+    const framed = tools.find((t) => t.name === "frame_tool");
+    assert.equal(host?.frameId, 0);
+    assert.ok(framed && framed.frameId > 0, "frame tool tagged with its frame id");
+    const r = await b.callWebMcpTool(framed.frameId, "frame_tool", { x: 7 });
+    assert.deepEqual(r, { ok: true, detail: "frame says 7" });
+    const r2 = await b.callWebMcpTool(0, "host_tool", {});
+    assert.deepEqual(r2, { ok: true, detail: "host result" });
+    // The frame's tool does NOT exist in the main frame's registry.
+    assert.equal((await b.callWebMcpTool(0, "frame_tool", {})).ok, false);
+  });
+
+  it("fails cleanly when the tool's frame is gone", async () => {
+    await b.navigate(`${site.ok}/webmcp-framed`);
+    const r = await b.callWebMcpTool(999, "anything", {});
+    assert.equal(r.ok, false);
+    assert.match(r.detail, /no longer on the page/);
   });
 });

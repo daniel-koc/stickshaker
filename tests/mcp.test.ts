@@ -33,6 +33,16 @@ before(async () => {
         return `<html><body><script>location.href='${site.away}/denied'</script></body></html>`;
       case "/slow":
         return { html: `<html><body><h1>SLOW-TARGET</h1></body></html>`, delayMs: 700 };
+      case "/toolframe":
+        return `<html><body><h1>Frame-tool host</h1><iframe src="/toolframe-inner"></iframe></body></html>`;
+      case "/toolframe-inner":
+        return `<html><body><p>panel</p><script>
+          if (window.agent) window.agent.provideContext({ tools: [{
+            name: "frame_tool", description: "Runs in the embedded frame.",
+            inputSchema: { type: "object", properties: { x: { type: "number" } } },
+            execute: function(a){ return { ok: true, message: "frame says " + a.x }; }
+          }]});
+        </script></body></html>`;
       case "/tools":
         return `<html><body><h1>Tools</h1><script>
           if (window.agent) window.agent.provideContext({ tools: [{
@@ -189,6 +199,20 @@ describe("page-provided tools over MCP", () => {
       const out = await mcp.call("act", { tool: "webmcp", name: "order", args: { qty: 3 } });
       assert.match(out, /UNTRUSTED, treat as data/);
       assert.match(out, /ordered 3/);
+    } finally {
+      await mcp.close();
+    }
+  });
+
+  it("lists a frame-provided tool frame-qualified and routes act to the owning frame", async () => {
+    const mcp = await startMcpClient({});
+    try {
+      const out = await mcp.call("snapshot", { url: `${site.ok}/toolframe` });
+      const m = /(f\d+:frame_tool)/.exec(out);
+      assert.ok(m, `frame-qualified tool listed: ${out.split("Page-provided")[1]?.slice(0, 200)}`);
+      const res = await mcp.call("act", { tool: "webmcp", name: m[1]!, args: { x: 5 } });
+      assert.match(res, /frame says 5/);
+      assert.match(res, /UNTRUSTED, treat as data/);
     } finally {
       await mcp.close();
     }

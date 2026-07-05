@@ -410,30 +410,42 @@ export class BrowserSession {
 
   /**
    * WebMCP: pages in the Chrome origin trial expose typed tools to agents instead
-   * of requiring click/type. We read the registry a WebMCP page maintains (the
-   * origin-trial API populates it via navigator.modelContext / window.agent) and
-   * return each tool's metadata; calling one runs the page's own handler.
+   * of requiring click/type. The registration shim is injected into EVERY document
+   * (see addInitScript), so an embedded frame can register tools too — we read each
+   * frame's registry and tag every tool with its owning frame's stable id, so a
+   * call routes back to the right document. Main-frame tools carry frameId 0.
    */
-  async detectWebMcpTools(): Promise<Array<{ name: string; description: string; inputSchema: unknown }>> {
-    try {
-      return await this.page.evaluate(() => {
-        const g = globalThis as unknown as { __webmcp_tools?: Record<string, { name: string; description?: string; inputSchema?: unknown }> };
-        const reg = g.__webmcp_tools;
-        if (!reg) return [];
-        return Object.values(reg).map((t) => ({
-          name: t.name,
-          description: t.description ?? "",
-          inputSchema: t.inputSchema ?? { type: "object", properties: {} },
-        }));
-      });
-    } catch {
-      return [];
+  async detectWebMcpTools(): Promise<Array<{ frameId: number; name: string; description: string; inputSchema: unknown }>> {
+    const out: Array<{ frameId: number; name: string; description: string; inputSchema: unknown }> = [];
+    for (const f of this.page.frames()) {
+      try {
+        const tools = await f.evaluate(() => {
+          const g = globalThis as unknown as { __webmcp_tools?: Record<string, { name: string; description?: string; inputSchema?: unknown }> };
+          const reg = g.__webmcp_tools;
+          if (!reg) return [];
+          return Object.values(reg).map((t) => ({
+            name: t.name,
+            description: t.description ?? "",
+            inputSchema: t.inputSchema ?? { type: "object", properties: {} },
+          }));
+        });
+        if (!tools.length) continue;
+        const frameId = this.frameIdOf(f);
+        for (const t of tools) out.push({ frameId, ...t });
+      } catch {
+        /* frame navigating / detached — skip its tools this turn */
+      }
     }
+    return out;
   }
 
-  async callWebMcpTool(name: string, args: Record<string, unknown>): Promise<ActionResult> {
+  async callWebMcpTool(frameId: number, name: string, args: Record<string, unknown>): Promise<ActionResult> {
+    const frame = frameId === 0 ? this.page.mainFrame() : this.frameById.get(frameId);
+    if (!frame || frame.isDetached()) {
+      return { ok: false, detail: `the frame that provided tool "${name}" is no longer on the page` };
+    }
     try {
-      const result = await this.page.evaluate(
+      const result = await frame.evaluate(
         async ({ n, a }) => {
           // The result string is page-controlled: cap it in the page world so a
           // hostile tool can't ship megabytes across the boundary, ballooning the

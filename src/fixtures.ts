@@ -156,6 +156,31 @@ function handle(pathname: string, params: URLSearchParams): string {
         </script>`,
       );
 
+    case "/webmcp-frame":
+      // The typed tool is registered by an EMBEDDED frame, not the host page —
+      // the code is reachable ONLY through that in-frame tool, so passing proves
+      // frame-aware WebMCP detection + frame-routed tool calls end to end.
+      return page(
+        "Manifest desk",
+        `<h1>Manifest desk</h1><p>This site's agent tools are provided by the embedded panel below.</p><iframe src="/webmcp-frame-inner" style="width:420px;height:120px;border:1px solid #ccc"></iframe>`,
+      );
+    case "/webmcp-frame-inner":
+      return page(
+        "Tool panel",
+        `<p>Tool panel ready.</p>`,
+        `<script>
+          var api = (window.agent && window.agent.provideContext) ? window.agent
+                  : (navigator.modelContext && navigator.modelContext.provideContext) ? navigator.modelContext
+                  : null;
+          if (api) api.provideContext({ tools: [{
+            name: "get_manifest",
+            description: "Return the site manifest, including the manifest code.",
+            inputSchema: { type: "object", properties: {} },
+            execute: function(){ return { ok: true, message: "Manifest v3. Manifest code: WEBMCP-F8Q1" }; }
+          }]});
+        </script>`,
+      );
+
     case "/inject-webmcp":
       // Injection via a page-provided tool DESCRIPTION. The benign fact lives in the
       // page text; the malicious instruction lives ONLY in the tool's description,

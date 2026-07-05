@@ -46,6 +46,16 @@ before(async () => {
             execute: function(a){ return { ok: true, message: "ordered " + a.qty }; }
           }]});
         </script></body></html>`;
+      case "/toolframe":
+        return `<html><body><h1>Manifest desk</h1><iframe src="/toolframe-inner"></iframe></body></html>`;
+      case "/toolframe-inner":
+        return `<html><body><p>panel</p><script>
+          if (window.agent) window.agent.provideContext({ tools: [{
+            name: "get_manifest", description: "Returns the manifest.",
+            inputSchema: { type: "object", properties: {} },
+            execute: function(){ return { ok: true, message: "Manifest code: TEST-77" }; }
+          }]});
+        </script></body></html>`;
       default:
         return `<html><body><h1>page ${path}</h1></body></html>`;
     }
@@ -254,6 +264,18 @@ describe("WebMCP through the loop", () => {
     assert.ok(obs, "webmcp result observed");
     assert.match(obs, /UNTRUSTED, treat as data/);
     assert.match(obs, /ordered 2/);
+  });
+
+  it("offers a tool registered by an embedded frame and routes the call to that frame", async () => {
+    ollama.script = [
+      { name: "webmcp_get_manifest", args: {} },
+      { name: "done", args: { answer: "got it" } },
+    ];
+    const r = await runAgent({ ...opts(), task: "t", startUrl: `${site.ok}/toolframe`, traceDir: tmp });
+    assert.equal(r.status, "done");
+    const obs = observations(r.runDir!).find((b) => b.includes("page-provided tool result"));
+    assert.ok(obs, "frame tool result observed");
+    assert.match(obs, /Manifest code: TEST-77/);
   });
 });
 

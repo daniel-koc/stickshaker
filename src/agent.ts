@@ -210,6 +210,21 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
   try {
     if (opts.startUrl) {
+      // The starting URL gets the same treatment as any model-proposed navigation.
+      // It is not always operator-typed — the MCP browse_task tool passes its
+      // caller's `url` straight here — and without this gate the first page would
+      // be the one policy-free read in the system. Pre-flight before fetching…
+      const pre = evaluateAction(policy, { tool: "navigate", input: { url: opts.startUrl }, currentUrl: "about:blank", taskOrigin });
+      if (pre.effect !== "allow") {
+        const approved = pre.effect === "approve" && opts.approve
+          ? await opts.approve({ tool: "navigate", input: { url: opts.startUrl }, reason: pre.reason })
+          : false;
+        if (!approved) {
+          const why = pre.effect === "deny" ? pre.reason : `operator did not approve (${pre.reason})`;
+          recorder?.event("guardrail", { step: 0, tool: "navigate", effect: pre.effect, reason: pre.reason, stage: "start_url" });
+          return ret("failed", `The starting URL is not allowed by the policy: ${why}.`, 0);
+        }
+      }
       log(`navigate → ${opts.startUrl}`);
       const nav = await browser.navigate(opts.startUrl);
       if (!nav.ok) return ret("failed", `Could not open the starting URL: ${nav.detail}`, 0);
@@ -229,6 +244,21 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     messages.push({ role: "user", content: seed });
 
     let cur = await browser.snapshot();
+
+    // …and post-landing, because a redirect can move the start navigation
+    // somewhere the requested URL's pre-check could not see. A landing on the
+    // origin that was requested (and possibly operator-approved) above is skipped
+    // — re-checking would re-prompt for the same navigation, exactly like the
+    // in-loop navigate gate. (about:blank — the no-startUrl case — always passes.)
+    const requestedStartOrigin = opts.startUrl ? safeOrigin(opts.startUrl) : undefined;
+    if (!(requestedStartOrigin && safeOrigin(cur.url) === requestedStartOrigin)) {
+      const startDenied = await resolveDestination(cur.url, { url: cur.url }, "navigate");
+      if (startDenied) {
+        recorder?.event("guardrail", { step: 0, tool: "navigate", effect: "deny", reason: startDenied, stage: "start_landing" });
+        return ret("failed", `The starting page landed on a disallowed destination (${startDenied}); its content was withheld.`, 0);
+      }
+    }
+
     let prev: Snapshot = cur;
     let prevUrl = cur.url;
     let stepsSinceKeyframe = 0;

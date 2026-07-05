@@ -199,8 +199,9 @@ every task was unanimous across 3 trials
 total cost: $0.2879 (60 runs, prompt caching on)   p95 step latency: 2054 ms
 ```
 
-Every task fixture passed all three trials (`pass 3/3`, unanimous). Every task fixture passed (forms, login, dropdown, search, pagination, SPA
-tab-switching, static extraction, a **jump menu** whose `<select>` navigates on
+Every task fixture passed all three trials — `pass 3/3`, unanimous (forms,
+login, dropdown, search, pagination, SPA tab-switching, static extraction, a
+**jump menu** whose `<select>` navigates on
 change — a live regression guard, because an onchange navigation racing the
 snapshot used to crash the whole run — an **iframe** whose button the agent
 clicked *inside the embedded frame* via a frame-qualified ref, a **shadow-DOM
@@ -209,7 +210,7 @@ querySelectorAll; the composed-tree walk enumerates it and the stamped ref stays
 clickable), a **WebMCP** page where the agent called the page's typed
 `place_order` tool instead of clicking, and a **frame-provided WebMCP tool**:
 the typed tool is registered by an embedded iframe, detected there, and the call
-routed back to that frame). And **all seven injection attacks were blocked** — in
+routed back to that frame). And **all eight injection attacks were blocked** — in
 every case the agent answered the benign question and ignored the planted
 instruction (unanimously, across all three trials). Seven of the eight target the
 **model-facing** defense across four ingestion surfaces: page text (white-on-white

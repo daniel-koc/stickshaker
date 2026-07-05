@@ -27,6 +27,12 @@ before(async () => {
         const links = Array.from({ length: 200 }, (_, i) => `<a href="/l${i}">link ${i}</a>`).join(" ");
         return `<html><body>${links}<p>${"x".repeat(9000)}</p></body></html>`;
       }
+      case "/manylinks-frame": {
+        // Enough links to exhaust the element cap in the MAIN frame alone, plus an
+        // iframe whose text must still be captured (short main text so it fits).
+        const links = Array.from({ length: 200 }, (_, i) => `<a href="/l${i}">l${i}</a>`).join(" ");
+        return `<html><body>${links}<iframe src="/panel"></iframe></body></html>`;
+      }
       case "/jumpmenu":
         return `<html><body><select id="s" onchange="if(this.value)location.href='/landed'">
           <option value="">choose</option><option value="go">Go</option></select></body></html>`;
@@ -122,6 +128,11 @@ before(async () => {
               description: "Always fails.",
               inputSchema: { type: "object", properties: {} },
               execute: function(){ throw new Error("page-side boom"); }
+            }, {
+              name: "hangs",
+              description: "Never settles.",
+              inputSchema: { type: "object", properties: {} },
+              execute: function(){ return new Promise(function(){}); }
             }]});
             var mc = navigator.modelContext;
             if (mc && mc.registerTool) mc.registerTool({
@@ -268,6 +279,15 @@ describe("iframes (cross-frame piercing + actuation)", () => {
     assert.ok(r1 && r1 === r2, `stable frame ref: ${r1} vs ${r2}`);
   });
 
+  it("still captures a child frame's text and doc token when the main frame exhausts the element cap", async () => {
+    await b.navigate(`${site.ok}/manylinks-frame`);
+    const s = await b.snapshot();
+    assert.equal(s.elements.length, 150);
+    assert.equal(s.elementsTruncated, true);
+    assert.match(s.text, /same-origin panel text ZEBRA/, "frame text survives a spent element budget");
+    assert.match(s.docToken ?? "", /\|/, "the child frame's token still aggregates");
+  });
+
   it("changes the aggregate docToken when a child frame reloads (forces a keyframe)", async () => {
     await b.navigate(`${site.ok}/framehost`);
     const t1 = (await b.snapshot()).docToken;
@@ -392,7 +412,7 @@ describe("WebMCP bridge", () => {
     await b.navigate(`${site.ok}/webmcp`);
     const tools = await b.detectWebMcpTools();
     const names = tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ["add_numbers", "huge_result", "throws", "via_register"]);
+    assert.deepEqual(names, ["add_numbers", "hangs", "huge_result", "throws", "via_register"]);
     const add = tools.find((t) => t.name === "add_numbers");
     assert.equal(add?.description, "Adds a and b.");
     assert.equal(add?.frameId, 0, "main-frame tools carry frameId 0");
@@ -425,6 +445,13 @@ describe("WebMCP bridge", () => {
     const boom = await b.callWebMcpTool(0, "throws", {});
     assert.equal(boom.ok, false);
     assert.match(boom.detail, /failed/);
+  });
+
+  it("times out a tool that never settles instead of hanging the run forever", async () => {
+    await b.navigate(`${site.ok}/webmcp`);
+    const r = await b.callWebMcpTool(0, "hangs", {}, 800);
+    assert.equal(r.ok, false);
+    assert.match(r.detail, /did not complete within/);
   });
 
   it("detects tools registered inside a child frame and routes the call to that frame", async () => {

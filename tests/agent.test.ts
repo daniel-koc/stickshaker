@@ -37,6 +37,8 @@ before(async () => {
       }
       case "/away":
         return `<html><body><h1>Away page</h1></body></html>`;
+      case "/bounce":
+        return `<html><body><script>location.href='${site.away}/denied'</script></body></html>`;
       case "/tools":
         return `<html><body><h1>Order desk</h1><script>
           if (window.agent) window.agent.provideContext({ tools: [{
@@ -134,6 +136,40 @@ describe("basic flows", () => {
     assert.equal(r.status, "failed");
     assert.match(r.message, /local model's action failed/);
     assert.match(r.message, /ANTHROPIC_API_KEY/);
+  });
+});
+
+describe("start-URL policy enforcement", () => {
+  it("refuses a denied start URL before fetching it (browse_task's url is untrusted input)", async () => {
+    ollama.script = [{ name: "done", args: { answer: "never reached" } }];
+    const r = await runAgent({
+      ...opts(),
+      task: "t",
+      startUrl: `${site.away}/denied`,
+      policy: { domains: { allow: ["127.0.0.1"] } },
+      traceDir: tmp,
+    });
+    assert.equal(r.status, "failed");
+    assert.equal(r.steps, 0);
+    assert.match(r.message, /starting URL is not allowed by the policy/);
+    assert.equal(observations(r.runDir!).length, 0, "no page content ever reached the model");
+  });
+
+  it("withholds the first page when the start URL redirects to a denied destination", async () => {
+    ollama.script = [{ name: "done", args: { answer: "never reached" } }];
+    const r = await runAgent({
+      ...opts(),
+      task: "t",
+      startUrl: `${site.ok}/bounce`, // allowed URL, immediately redirects off-allowlist
+      policy: { domains: { allow: ["127.0.0.1"] } },
+      traceDir: tmp,
+    });
+    assert.equal(r.status, "failed");
+    assert.match(r.message, /landed on a disallowed destination/);
+    assert.match(r.message, /content was withheld/);
+    const obs = observations(r.runDir!);
+    assert.equal(obs.length, 0, "the denied landing page was never shown");
+    assert.ok(!readFileSync(join(r.runDir!, "trace.jsonl"), "utf8").includes("SECRET-DENIED"), "denied content absent from the trace");
   });
 });
 
@@ -338,8 +374,14 @@ describe("resume", () => {
       },
     });
     assert.equal(r.status, "done");
-    assert.equal(prompts.length, 1, "cross-origin gate fired despite same-origin-as-last-page");
-    assert.match(prompts[0]!, new RegExp(site.ok), "reason anchored to the ORIGINAL task origin");
+    // Two gates fire, both anchored to the ORIGINAL origin: resuming ON a page
+    // that is cross-origin vs the anchor needs approval (the start-URL gate),
+    // and so does the scripted navigate — despite both being same-origin with
+    // the page the run stopped on.
+    assert.equal(prompts.length, 2, "start-URL gate + navigate gate both fired");
+    for (const reason of prompts) {
+      assert.match(reason, new RegExp(site.ok), "reason anchored to the ORIGINAL task origin");
+    }
   });
 
   it("resumes an interrupted run whose trace has a torn final line", async () => {

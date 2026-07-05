@@ -4,6 +4,7 @@ import type { Snapshot, ActionResult, ElementInfo } from "./types.js";
 const MAX_ELEMENTS = 150;
 const MAX_TEXT_CHARS = 6000;
 const ACTION_TIMEOUT_MS = 8000;
+const EVAL_DEADLINE_MS = 10000;
 
 export interface BrowserOptions {
   headless: boolean;
@@ -35,6 +36,28 @@ function frameHost(url: string): string {
   } catch {
     return url;
   }
+}
+
+/**
+ * Bound a page-world evaluation. Page code participates in these promises — a
+ * WebMCP tool's execute() is page code by definition, an iframe can simply never
+ * finish loading, and enumeration touches page-overridable DOM accessors — so
+ * without a deadline a hostile or broken page can hang the promise forever,
+ * wedging the agent loop (and the MCP server's serialized handler chain, where
+ * every later call queues behind the stuck one). Rejects on timeout instead;
+ * the losing promise is silenced so a late settlement can't crash the process.
+ */
+function withDeadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      p.catch(() => {});
+      reject(new Error(`${what} did not complete within ${ms / 1000}s`));
+    }, ms);
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e: unknown) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); },
+    );
+  });
 }
 
 /**
@@ -252,6 +275,17 @@ export class BrowserSession {
       }
     });
     s.page = await s.context.newPage();
+    // Prune the frame-id maps when a frame detaches. Detached frames can never be
+    // located again (locator/callWebMcpTool treat a missing id exactly like a
+    // detached one), so keeping them would only leak Frame objects — which matters
+    // in the long-lived MCP server, where one session may cross thousands of pages.
+    s.page.on("framedetached", (f) => {
+      const id = s.frameIds.get(f);
+      if (id !== undefined) {
+        s.frameIds.delete(f);
+        s.frameById.delete(id);
+      }
+    });
     // Track popups/new tabs opened AFTER the main page (the main page's own `page`
     // event already fired above). The agent drives only the main page, so these are
     // enforced against policy and closed via drainPopups().
@@ -316,7 +350,11 @@ export class BrowserSession {
 
     // Main frame first, OUTSIDE the per-frame try/catch: a nav race here must reach
     // snapshot()'s retry, not be swallowed as an empty snapshot.
-    const mainRaw = await main.evaluate(enumerateInFrame, { maxElements: remaining, maxText: MAX_TEXT_CHARS });
+    const mainRaw = await withDeadline(
+      main.evaluate(enumerateInFrame, { maxElements: remaining, maxText: MAX_TEXT_CHARS }),
+      EVAL_DEADLINE_MS,
+      "page snapshot",
+    );
     for (const el of mainRaw.elements) elements.push({ ...(el as unknown as ElementInfo), ref: String(el.ref) });
     remaining -= mainRaw.elements.length;
     elementsTruncated ||= mainRaw.elementsTruncated;
@@ -328,12 +366,19 @@ export class BrowserSession {
     // both). Each is enumerated independently and its refs are frame-qualified
     // ("fN:local") so they never collide. A frame that is mid-navigation, detached,
     // or otherwise unavailable is skipped this turn rather than failing the snapshot.
+    // Every frame is visited even once the element budget is spent — its text and
+    // doc token must still be collected (skipping a frame would both drop its text
+    // and churn the aggregate docToken, forcing spurious keyframes), and the in-page
+    // walk sets the truncated flag only if a visible element actually got cut.
     for (const f of this.page.frames()) {
       if (f === main) continue;
-      if (remaining <= 0) { elementsTruncated = true; break; }
       const id = this.frameIdOf(f);
       try {
-        const raw = await f.evaluate(enumerateInFrame, { maxElements: remaining, maxText: MAX_TEXT_CHARS });
+        const raw = await withDeadline(
+          f.evaluate(enumerateInFrame, { maxElements: Math.max(0, remaining), maxText: MAX_TEXT_CHARS }),
+          EVAL_DEADLINE_MS,
+          `frame f${id} snapshot`,
+        );
         for (const el of raw.elements) elements.push({ ...(el as unknown as ElementInfo), ref: `f${id}:${String(el.ref)}` });
         remaining -= raw.elements.length;
         elementsTruncated ||= raw.elementsTruncated;
@@ -341,7 +386,7 @@ export class BrowserSession {
         tokens.push(`${id}=${String(raw.docToken ?? "")}`);
         if (raw.text.trim()) texts.push(`[frame f${id} — ${frameHost(raw.url)}]\n${raw.text}`);
       } catch {
-        /* frame navigating / detached / unavailable — skip it this turn */
+        /* frame navigating / detached / unavailable / stuck loading — skip it this turn */
       }
     }
 
@@ -452,49 +497,59 @@ export class BrowserSession {
     const out: Array<{ frameId: number; name: string; description: string; inputSchema: unknown }> = [];
     for (const f of this.page.frames()) {
       try {
-        const tools = await f.evaluate(() => {
-          const g = globalThis as unknown as { __webmcp_tools?: Record<string, { name: string; description?: string; inputSchema?: unknown }> };
-          const reg = g.__webmcp_tools;
-          if (!reg) return [];
-          return Object.values(reg).map((t) => ({
-            name: t.name,
-            description: t.description ?? "",
-            inputSchema: t.inputSchema ?? { type: "object", properties: {} },
-          }));
-        });
+        const tools = await withDeadline(
+          f.evaluate(() => {
+            const g = globalThis as unknown as { __webmcp_tools?: Record<string, { name: string; description?: string; inputSchema?: unknown }> };
+            const reg = g.__webmcp_tools;
+            if (!reg) return [];
+            return Object.values(reg).map((t) => ({
+              name: t.name,
+              description: t.description ?? "",
+              inputSchema: t.inputSchema ?? { type: "object", properties: {} },
+            }));
+          }),
+          EVAL_DEADLINE_MS,
+          "page-tool detection",
+        );
         if (!tools.length) continue;
         const frameId = this.frameIdOf(f);
         for (const t of tools) out.push({ frameId, ...t });
       } catch {
-        /* frame navigating / detached — skip its tools this turn */
+        /* frame navigating / detached / stuck — skip its tools this turn */
       }
     }
     return out;
   }
 
-  async callWebMcpTool(frameId: number, name: string, args: Record<string, unknown>): Promise<ActionResult> {
+  async callWebMcpTool(frameId: number, name: string, args: Record<string, unknown>, deadlineMs = EVAL_DEADLINE_MS): Promise<ActionResult> {
     const frame = frameId === 0 ? this.page.mainFrame() : this.frameById.get(frameId);
     if (!frame || frame.isDetached()) {
       return { ok: false, detail: `the frame that provided tool "${name}" is no longer on the page` };
     }
     try {
-      const result = await frame.evaluate(
-        async ({ n, a }) => {
-          // The result string is page-controlled: cap it in the page world so a
-          // hostile tool can't ship megabytes across the boundary, ballooning the
-          // observation (and with it every later model call).
-          const cap = (s: string): string => (s.length > 4000 ? s.slice(0, 4000) : s);
-          const g = globalThis as unknown as { __webmcp_tools?: Record<string, { execute: (x: unknown) => unknown }> };
-          const tool = g.__webmcp_tools?.[n];
-          if (!tool) return { ok: false, detail: `no page tool named "${n}"` };
-          const res = await tool.execute(a);
-          if (res && typeof res === "object") {
-            const r = res as { ok?: boolean; message?: string };
-            return { ok: r.ok !== false, detail: cap(String(r.message ?? JSON.stringify(res))) };
-          }
-          return { ok: true, detail: cap(String(res)) };
-        },
-        { n: name, a: args },
+      // execute() is page code: the deadline turns a tool that never settles (a
+      // promise-that-never-resolves DoS) into an ordinary failed action.
+      const result = await withDeadline(
+        frame.evaluate(
+          async ({ n, a }) => {
+            // The result string is page-controlled: cap it in the page world so a
+            // hostile tool can't ship megabytes across the boundary, ballooning the
+            // observation (and with it every later model call).
+            const cap = (s: string): string => (s.length > 4000 ? s.slice(0, 4000) : s);
+            const g = globalThis as unknown as { __webmcp_tools?: Record<string, { execute: (x: unknown) => unknown }> };
+            const tool = g.__webmcp_tools?.[n];
+            if (!tool) return { ok: false, detail: `no page tool named "${n}"` };
+            const res = await tool.execute(a);
+            if (res && typeof res === "object") {
+              const r = res as { ok?: boolean; message?: string };
+              return { ok: r.ok !== false, detail: cap(String(r.message ?? JSON.stringify(res))) };
+            }
+            return { ok: true, detail: cap(String(res)) };
+          },
+          { n: name, a: args },
+        ),
+        deadlineMs,
+        `page tool "${name}"`,
       );
       await this.settle();
       const r = result as ActionResult;

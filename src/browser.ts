@@ -14,6 +14,22 @@ function errMsg(e: unknown): string {
 }
 
 /**
+ * True for a Playwright error caused by a navigation tearing down the page's JS
+ * context while an evaluate was in flight. A `<select onchange>` jump menu, a
+ * meta-refresh, or a client-side redirect that outran settle() all produce this.
+ */
+function isNavigationRace(e: unknown): boolean {
+  const m = errMsg(e).toLowerCase();
+  return (
+    m.includes("execution context was destroyed") ||
+    m.includes("context was destroyed") ||
+    m.includes("cannot find context") ||
+    m.includes("frame was detached") ||
+    m.includes("navigating and changing the content")
+  );
+}
+
+/**
  * Thin wrapper over a Playwright Chromium session.
  *
  * Snapshotting enumerates visible interactive elements and stamps each with a
@@ -115,6 +131,22 @@ export class BrowserSession {
   }
 
   async snapshot(): Promise<Snapshot> {
+    try {
+      return await this.captureSnapshot();
+    } catch (e) {
+      // A navigation can destroy the JS context while the evaluate is running —
+      // e.g. a <select onchange> jump menu, a meta-refresh, or a client-side
+      // redirect that outran settle(). Rather than let an uncaught throw abort the
+      // whole run (agent.ts snapshots bare after each action), wait for the new
+      // document to commit and capture once more. Every caller gets this safety net.
+      if (!isNavigationRace(e)) throw e;
+      await this.page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+      await this.settle();
+      return await this.captureSnapshot();
+    }
+  }
+
+  private async captureSnapshot(): Promise<Snapshot> {
     const raw = await this.page.evaluate(
       ({ maxElements, maxText }) => {
         // Stable refs: keep any ref already on a node; only new nodes get a new
@@ -251,6 +283,9 @@ export class BrowserSession {
       } catch {
         await loc.selectOption({ label: value }, { timeout: ACTION_TIMEOUT_MS });
       }
+      // Parity with click/type: a <select onchange> can navigate (a jump menu), so
+      // let it commit before the caller snapshots.
+      await this.settle();
       return { ok: true, detail: `selected ${JSON.stringify(value)} in element ${ref}` };
     } catch (e) {
       return { ok: false, detail: `select failed on ${ref}: ${errMsg(e)}` };

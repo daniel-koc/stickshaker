@@ -16,12 +16,12 @@ Cursor, …) a policy-guarded browser via the
 > harness, and **WebMCP-hybrid** actuation — the agent prefers a page's typed
 > tools when it exposes them (Chrome origin-trial standard) and falls back to
 > snapshot+act on the legacy web. The snapshot pierces **iframes** (same- and
-> cross-origin) so the agent can act on elements — and call WebMCP tools —
-> inside embedded frames. On the eval suite Claude Sonnet scores **11/11 tasks
-> and blocks 3/3 injection attacks** (including a poisoned WebMCP tool
-> description); see [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale
-> is written up in [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems
-> problem."*
+> cross-origin) and **open shadow roots**, so the agent can act on elements —
+> and call WebMCP tools — inside embedded frames and web components. On the
+> eval suite Claude Sonnet scores **12/12 tasks and blocks 3/3 injection
+> attacks** (including a poisoned WebMCP tool description); see
+> [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale is written up in
+> [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems problem."*
 
 ---
 
@@ -60,7 +60,7 @@ The full argument, with the numbers behind each claim, is in
 |---------|--------------|
 | `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
-| `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (11 tasks + 3 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
+| `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (12 tasks + 3 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
 | `stickshaker resume <run-dir>` | Continue an interrupted run from its trace. |
@@ -378,7 +378,7 @@ pnpm stickshaker run "Fill the form with 'hello' and submit" \
 pnpm stickshaker view .stickshaker/traces/<run-dir>
 pnpm stickshaker resume .stickshaker/traces/<run-dir>
 
-# The eval suite: 11 tasks + 3 injection attacks
+# The eval suite: 12 tasks + 3 injection attacks
 pnpm stickshaker eval --model claude-sonnet-5
 
 # Diff-vs-full token benchmark on any task
@@ -405,13 +405,16 @@ its number and successive snapshots can be diffed by ref. The snapshot spans
 the main frame **and every child frame** (iframes, same- and cross-origin):
 refs are frame-qualified (bare like `5` for the main frame, `f2:5` for an
 element inside a frame) and actuation routes each ref back to its owning frame,
-so the agent can click and type inside embedded content. In `diff` mode the
-agent sends a full **keyframe** on the first turn, after any navigation, and
-every N steps (`--keyframe-interval`, default 5); in between it sends only
-added/changed/removed elements and a text-changed flag. Older observations are
-collapsed to placeholders so the per-call context stays flat instead of growing
-with every step. `--mode full` disables all of this to reproduce the
-full-snapshot baseline for benchmarking.
+so the agent can click and type inside embedded content. Within each document
+the walk covers the **composed tree** — it descends into every open shadow
+root, so elements inside web components enumerate too (Playwright's locators
+pierce open roots, so the stamped refs stay actuatable; closed roots are the
+documented boundary). In `diff` mode the agent sends a full **keyframe** on the
+first turn, after any navigation, and every N steps (`--keyframe-interval`,
+default 5); in between it sends only added/changed/removed elements and a
+text-changed flag. Older observations are collapsed to placeholders so the
+per-call context stays flat instead of growing with every step. `--mode full`
+disables all of this to reproduce the full-snapshot baseline for benchmarking.
 
 ## Flight recorder
 
@@ -525,7 +528,7 @@ Every claim reproduces with one command — see
 | Claim | Measured |
 |-------|----------|
 | Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
-| Eval suite (Sonnet) | **11/11 tasks, 3/3 injections blocked** — single run per cell |
+| Eval suite (Sonnet) | **12/12 tasks, 3/3 injections blocked** — single run per cell |
 | Hybrid routing (4-task slice) | **~55% cheaper** than cloud-only, at 3/4 vs 4/4 — the cost/accuracy dial |
 
 ---
@@ -582,7 +585,7 @@ pnpm typecheck       # tsc --noEmit over src, tests, and scripts
 pnpm build           # compile to dist/
 ```
 
-`pnpm test` runs 138 tests through Node's built-in runner (no extra test
+`pnpm test` runs 144 tests through Node's built-in runner (no extra test
 framework) — **no API key needed and nothing talks to the cloud**. Pure units
 cover the policy engine, injection graders, snapshot diffing, the
 untrusted-text fence, vector memory, and cost accounting. Integration suites
@@ -600,8 +603,9 @@ eval`.
 
 ## Limitations
 
-- **No shadow-DOM piercing yet.** The snapshot enumerates iframes (same- and
-  cross-origin), but elements inside shadow roots are still invisible to it.
+- **Closed shadow roots are invisible.** The composed-tree walk pierces every
+  *open* shadow root; `attachShadow({ mode: "closed" })` leaves no JS handle
+  and Playwright locators can't pierce it. Rare in practice, documented here.
 - **The injection suite is young.** 3/3 adversarial patterns are blocked so
   far; more ingestion surfaces (and an attack that targets the enforcing
   half rather than the model) are still to be covered.

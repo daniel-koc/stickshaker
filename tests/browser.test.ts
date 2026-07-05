@@ -36,6 +36,46 @@ before(async () => {
         return `<html><body><h1>Landed</h1><button>onward</button></body></html>`;
       case "/popup":
         return `<html><body><button id="p" onclick="window.open('${site.away}/landed')">open</button></body></html>`;
+      case "/shadowhost":
+        return `<html><body><h1>Host page</h1><p>light-dom text here</p>
+          <wc-outer></wc-outer>
+          <script>
+            customElements.define("wc-inner", class extends HTMLElement {
+              connectedCallback() {
+                var r = this.attachShadow({ mode: "open" });
+                r.innerHTML = '<button>Nested action</button>';
+              }
+            });
+            customElements.define("wc-outer", class extends HTMLElement {
+              connectedCallback() {
+                var r = this.attachShadow({ mode: "open" });
+                r.innerHTML = '<p>SHADOW-TEXT-MARKER visible words</p>' +
+                  '<button id="go">Shadow go</button>' +
+                  '<button style="display:none">Hidden shadow</button>' +
+                  '<input placeholder="shadow field">' +
+                  '<div id="out"></div>' +
+                  '<wc-inner></wc-inner>';
+                r.getElementById("go").addEventListener("click", function () {
+                  r.getElementById("out").textContent = "clicked CLICK-RESULT-77";
+                });
+              }
+            });
+          </script></body></html>`;
+      case "/frameshadowhost":
+        return `<html><body><h1>Frame+shadow host</h1><iframe src="/frameshadowinner"></iframe></body></html>`;
+      case "/frameshadowinner":
+        return `<html><body><p>inner doc</p><wc-deep></wc-deep>
+          <script>
+            customElements.define("wc-deep", class extends HTMLElement {
+              connectedCallback() {
+                var r = this.attachShadow({ mode: "open" });
+                r.innerHTML = '<button id="d">Deep action</button><div id="o"></div>';
+                r.getElementById("d").addEventListener("click", function () {
+                  r.getElementById("o").textContent = "DEEP-CLICK-OK";
+                });
+              }
+            });
+          </script></body></html>`;
       case "/webmcp-framed":
         return `<html><body><h1>Host</h1><script>
           if (window.agent) window.agent.provideContext({ tools: [{
@@ -239,6 +279,66 @@ describe("iframes (cross-frame piercing + actuation)", () => {
     await b.page.waitForTimeout(300);
     const t2 = (await b.snapshot()).docToken;
     assert.notEqual(t1, t2, "a child-frame reload changes the aggregate token");
+  });
+});
+
+describe("shadow DOM (composed-tree piercing)", () => {
+  it("enumerates elements inside open shadow roots, including nested roots, with visibility filtering", async () => {
+    await b.navigate(`${site.ok}/shadowhost`);
+    const s = await b.snapshot();
+    const names = s.elements.map((e) => e.name);
+    assert.ok(names.includes("Shadow go"), "shadow-root button found");
+    assert.ok(names.includes("Nested action"), "shadow-in-shadow button found");
+    assert.ok(names.includes("shadow field"), "shadow-root input found");
+    assert.ok(!names.includes("Hidden shadow"), "display:none inside a root is still filtered");
+  });
+
+  it("captures shadow-rendered text exactly once (innerText misses it; our walk must not double it)", async () => {
+    await b.navigate(`${site.ok}/shadowhost`);
+    const s = await b.snapshot();
+    assert.match(s.text, /light-dom text here/);
+    assert.equal((s.text.match(/SHADOW-TEXT-MARKER/g) ?? []).length, 1, "present, and not duplicated");
+  });
+
+  it("clicks a button inside a shadow root via its stamped ref (locator pierce)", async () => {
+    await b.navigate(`${site.ok}/shadowhost`);
+    let s = await b.snapshot();
+    const go = s.elements.find((e) => e.name === "Shadow go");
+    assert.ok(go);
+    const r = await b.click(go.ref);
+    assert.equal(r.ok, true, r.detail);
+    s = await b.snapshot();
+    assert.match(s.text, /CLICK-RESULT-77/, "the in-shadow click took effect");
+  });
+
+  it("types into an input inside a shadow root", async () => {
+    await b.navigate(`${site.ok}/shadowhost`);
+    let s = await b.snapshot();
+    const field = s.elements.find((e) => e.name === "shadow field");
+    assert.ok(field);
+    const r = await b.type(field.ref, "into the shadows", false);
+    assert.equal(r.ok, true, r.detail);
+    s = await b.snapshot();
+    assert.equal(s.elements.find((e) => e.name === "shadow field")?.value, "into the shadows");
+  });
+
+  it("keeps shadow-element refs stable across snapshots", async () => {
+    await b.navigate(`${site.ok}/shadowhost`);
+    const r1 = (await b.snapshot()).elements.find((e) => e.name === "Shadow go")?.ref;
+    const r2 = (await b.snapshot()).elements.find((e) => e.name === "Shadow go")?.ref;
+    assert.ok(r1 && r1 === r2, `stable shadow ref: ${r1} vs ${r2}`);
+  });
+
+  it("pierces a shadow root inside an iframe (frame-qualified ref, working click)", async () => {
+    await b.navigate(`${site.ok}/frameshadowhost`);
+    let s = await b.snapshot();
+    const deep = s.elements.find((e) => e.name === "Deep action");
+    assert.ok(deep, "button inside shadow-inside-iframe found");
+    assert.match(deep.ref, /^f\d+:\d+$/, `frame-qualified, got ${deep.ref}`);
+    const r = await b.click(deep.ref);
+    assert.equal(r.ok, true, r.detail);
+    s = await b.snapshot();
+    assert.match(s.text, /DEEP-CLICK-OK/);
   });
 });
 

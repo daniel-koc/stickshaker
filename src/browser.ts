@@ -40,7 +40,12 @@ function frameHost(url: string): string {
 /**
  * Runs IN one frame's document: enumerate visible interactive elements, stamp each
  * with a stable per-document `data-sk-ref`, and return them with FRAME-LOCAL numeric
- * refs plus the frame's visible text and per-document token. The BrowserSession
+ * refs plus the frame's visible text and per-document token. The walk covers the
+ * COMPOSED tree: it recurses into every open shadow root (a flat querySelectorAll
+ * cannot see into web components), so component-framework pages enumerate too —
+ * and Playwright's CSS locators pierce open roots, so the stamped refs stay
+ * actuatable with no changes on the actuation side. Closed shadow roots are out of
+ * scope (no JS handle from outside; documented limitation). The BrowserSession
  * qualifies the refs across frames (`fN:local`) and merges the results. Kept at
  * module scope so it can be handed to both `page.mainFrame().evaluate` and each
  * child `frame.evaluate` — Playwright can execute it in cross-origin frames too.
@@ -90,13 +95,9 @@ const enumerateInFrame = ({ maxElements, maxText }: { maxElements: number; maxTe
 
   const elements: Array<Record<string, unknown>> = [];
   let elementsTruncated = false;
+  const shadowTexts: string[] = [];
 
-  for (const el of Array.from(document.querySelectorAll(interactiveSelector))) {
-    if (!isVisible(el)) continue;
-    if (elements.length >= maxElements) {
-      elementsTruncated = true;
-      break;
-    }
+  const addElement = (el: Element): void => {
     let refAttr = el.getAttribute("data-sk-ref");
     if (refAttr === null) {
       refAttr = String(counter.__skNextRef!++);
@@ -120,9 +121,41 @@ const enumerateInFrame = ({ maxElements, maxText }: { maxElements: number; maxTe
       if (value) info.value = inputType === "password" ? "[redacted]" : value.slice(0, 80);
     }
     elements.push(info);
-  }
+  };
 
-  const fullText = ((document.body?.innerText ?? "") as string)
+  // Composed-tree walk: this root's interactive elements first, then recurse into
+  // every OPEN shadow root it hosts (`.shadowRoot` is null for closed/UA roots).
+  // The truncated flag is set only when a VISIBLE interactive element actually
+  // exceeds the cap — a page with exactly maxElements must not read as truncated.
+  const collect = (root: Document | ShadowRoot): void => {
+    for (const el of Array.from(root.querySelectorAll(interactiveSelector))) {
+      if (!isVisible(el)) continue;
+      if (elements.length >= maxElements) {
+        elementsTruncated = true;
+        return;
+      }
+      addElement(el);
+    }
+    for (const host of Array.from(root.querySelectorAll("*"))) {
+      if (elementsTruncated) return;
+      const sr = (host as Element & { shadowRoot: ShadowRoot | null }).shadowRoot;
+      if (!sr) continue;
+      // innerText walks the NODE tree, not the flat tree, so shadow-rendered text
+      // never reaches body.innerText — gather each root's text here. (Slotted
+      // light-DOM content stays in the node tree and is already covered above;
+      // nested roots are collected by their own recursion level, so no doubles.)
+      const t = Array.from(sr.children)
+        .map((c) => ((c as HTMLElement).innerText ?? ""))
+        .join("\n")
+        .trim();
+      if (t) shadowTexts.push(t);
+      collect(sr);
+    }
+  };
+  collect(document);
+
+  const fullText = [(document.body?.innerText ?? "") as string, ...shadowTexts]
+    .join("\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

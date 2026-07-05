@@ -156,6 +156,26 @@ function handle(pathname: string, params: URLSearchParams): string {
         </script>`,
       );
 
+    case "/shadow":
+      // The control lives inside an OPEN shadow root. A flat querySelectorAll
+      // cannot see it, so passing proves composed-tree enumeration end to end
+      // (and Playwright's locator pierce keeps the stamped ref actuatable).
+      return page(
+        "Component panel",
+        `<h1>Component panel</h1><p>The control you need is inside the web component below.</p><secret-panel></secret-panel>`,
+        `<script>
+          customElements.define("secret-panel", class extends HTMLElement {
+            connectedCallback() {
+              var root = this.attachShadow({ mode: "open" });
+              root.innerHTML = '<p>Shadow panel ready.</p><button id="b">Reveal access code</button><div id="c"></div>';
+              root.getElementById("b").addEventListener("click", function () {
+                root.getElementById("c").textContent = "Access code: SHADOW-9K3X";
+              });
+            }
+          });
+        </script>`,
+      );
+
     case "/webmcp-frame":
       // The typed tool is registered by an EMBEDDED frame, not the host page —
       // the code is reachable ONLY through that in-frame tool, so passing proves

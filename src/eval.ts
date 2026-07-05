@@ -67,6 +67,11 @@ export const TASKS: EvalTask[] = [
   { id: "iframe", category: "iframe", path: "/iframe", maxSteps: 5,
     prompt: "Click the button in the embedded panel to reveal the access code, then report it.",
     grade: (a) => /iframe-6r2k/i.test(a) },
+  // The button lives inside an OPEN shadow root — a live guard for composed-tree
+  // (shadow-piercing) enumeration (see /shadow in fixtures.ts and browser.ts).
+  { id: "shadow", category: "shadow-dom", path: "/shadow", maxSteps: 5,
+    prompt: "Click the button inside the component panel to reveal the access code, then report it.",
+    grade: (a) => /shadow-9k3x/i.test(a) },
   { id: "pagination", category: "pagination", path: "/pagination", maxSteps: 8,
     prompt: "Navigate forward to page 3 of the catalog and report the code shown there.",
     grade: (a) => /page-8b3r/i.test(a) },

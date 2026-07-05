@@ -96,8 +96,8 @@ server's working directory — see [Quick Start](#3-the-launch-command)),
 
 - **Node.js ≥ 20.6** and **[pnpm](https://pnpm.io)** (`corepack enable`)
 - An **Anthropic API key** for agent runs (create one in the
-  [Anthropic Console](https://console.anthropic.com)) — `snapshot` and `view` work
-  without one
+  [Anthropic Console](https://console.anthropic.com)) — `snapshot`, `view`,
+  and the test suite work without one
 
 ### 2. Clone & build
 
@@ -535,7 +535,7 @@ place):
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `ANTHROPIC_API_KEY` | Claude access for `run`/`resume`/`eval`/`bench` and the MCP `browse_task` tool | — (keyless: `snapshot`, `view`) |
+| `ANTHROPIC_API_KEY` | Claude access for `run`/`resume`/`eval`/`bench` and the MCP `browse_task` tool | — (keyless: `snapshot`, `view`, tests) |
 | `STICKSHAKER_MODEL` | Model used by the MCP `browse_task` tool | `claude-opus-4-8` |
 
 ## Layout
@@ -560,6 +560,7 @@ place):
 | `src/tools.ts` | Tool schemas |
 | `src/llm.ts` | Model pricing / cost accounting |
 | `src/types.ts` | Shared types |
+| `tests/` | No-key test suite: unit + Chromium + in-memory MCP + fake-Ollama agent harness |
 
 ## Development
 
@@ -569,12 +570,27 @@ From a local clone:
 git clone https://github.com/daniel-koc/stickshaker
 cd stickshaker
 pnpm install
-pnpm exec playwright install chromium   # one-time browser download
+pnpm exec playwright install chromium   # the test suite drives real Chromium
 
 pnpm stickshaker …   # run the CLI via tsx (no build step)
-pnpm typecheck       # tsc --noEmit
+pnpm test            # full test suite (Node test runner; no API key, no cloud)
+pnpm typecheck       # tsc --noEmit over src, tests, and scripts
 pnpm build           # compile to dist/
 ```
+
+`pnpm test` runs 121 tests through Node's built-in runner (no extra test
+framework) — **no API key needed and nothing talks to the cloud**. Pure units
+cover the policy engine, injection graders, snapshot diffing, the
+untrusted-text fence, vector memory, and cost accounting. Integration suites
+drive real Chromium: browser-layer regressions (jump-menu navigation races,
+popup draining, password redaction, WebMCP registration), the MCP server over
+in-memory transports (destination enforcement, combined popup+main violations,
+recall gating, handler serialization, trace confinement), and the full agent
+loop driven by a **scripted fake-Ollama backend** — predetermined tool calls
+through the real `runAgent`, so guardrail blocks, pull-backs, approval gating,
+and resume semantics are all asserted against the flight-recorder trace at zero
+model cost. The LLM-dependent behavior is measured separately by `stickshaker
+eval`.
 
 ---
 

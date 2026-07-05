@@ -56,6 +56,25 @@ function handle(pathname: string, params: URLSearchParams): string {
       return page("Select", `<h1>Pick a color</h1><form method="get" action="/select"><select name="color"><option value="">Choose…</option><option value="red">Red</option><option value="blue">Blue</option><option value="green">Green</option></select><button type="submit">Confirm</button></form>`);
     }
 
+    case "/jump": {
+      // A jump menu: the <select> navigates on change — no submit button at all.
+      // This is the pattern that used to crash the run (a navigation destroying
+      // the JS context mid-snapshot, see browser.ts); it lives in the suite as a
+      // permanent regression guard. The code is reachable ONLY via the select-
+      // triggered navigation, so passing proves selectOption + settle + the
+      // snapshot retry survive a real onchange navigation end to end.
+      const dest = params.get("dest");
+      if (dest !== null) {
+        return dest === "reports"
+          ? page("Reports", `<h1>Reports</h1><p>Access code: <b>JUMP-5X2K</b></p>`)
+          : page("Section", `<h1>${escapeHtml(dest)}</h1><p>Nothing to see in this section.</p>`);
+      }
+      return page(
+        "Portal",
+        `<h1>Portal</h1><p>Pick a section in the menu to jump straight to it.</p><select aria-label="Jump to section" onchange="if(this.value)location.href='/jump?dest='+this.value"><option value="">Jump to section…</option><option value="overview">Overview</option><option value="reports">Reports</option><option value="settings">Settings</option></select>`,
+      );
+    }
+
     case "/search": {
       const q = (params.get("q") ?? "").toLowerCase();
       if (params.get("q") === null) {

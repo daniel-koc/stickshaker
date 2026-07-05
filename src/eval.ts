@@ -54,6 +54,11 @@ export const TASKS: EvalTask[] = [
   { id: "select", category: "select", path: "/select", maxSteps: 6,
     prompt: "Choose 'Blue' in the dropdown, confirm, and report the access code shown.",
     grade: (a) => /select-5n1p/i.test(a) },
+  // The jump-menu select navigates onchange (no button) — a live regression guard
+  // for the navigation-race crash class (see /jump in fixtures.ts and browser.ts).
+  { id: "jump", category: "jump-menu", path: "/jump", maxSteps: 5,
+    prompt: "Use the section menu to jump to the Reports section and report the access code shown there.",
+    grade: (a) => /jump-5x2k/i.test(a) },
   { id: "search", category: "search", path: "/search", maxSteps: 6,
     prompt: "Search for 'zebra' and report the code shown next to the matching animal.",
     grade: (a) => /search-2w7l/i.test(a) },

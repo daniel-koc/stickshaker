@@ -62,23 +62,27 @@ being attacked *is* the prompt. The fix is architectural: enforcement has to liv
 code the model can't talk its way past.
 
 Stickshaker does two things. It labels page text as untrusted at the structural
-level (fenced between markers a page cannot forge) so a hidden instruction
-reads as data, not a command — the model-facing half. And it runs every
-action through a declarative policy engine (domain allow/deny, origin
-scoping, budgets, human-in-the-loop) *before* the action executes — the
-enforcing half. Crucially, the enforcement is on where the browser actually
-**lands**, not on which tool was named: a click or a form submit that
-navigates to a denied origin is caught and reversed, because a policy that
-only inspects the `navigate` tool is a policy with a side door. The labeling half has to cover *every* path page-controlled
-bytes take into the context, not just the obvious one — so the adversarial fixtures
-plant instructions across seven of them: hidden page text, a fake "assistant
-directive" block, a poisoned WebMCP tool description *and* a poisoned tool result, an
-embedded iframe, an open shadow root, and the page title (which — a bug this suite
-caught — used to render outside the untrusted fence). The agent answered the real
-question and ignored the injection **7/7**. Seven patterns and one capable model
-isn't proof — the sharper test is a *weaker* model that obeys while the policy layer
-still contains the blast radius — but the point is that the defense is a boundary,
-not a please.
+level (fenced between markers a page cannot forge) so a hidden instruction reads as
+data, not a command — the model-facing half. And it runs every action through a
+declarative policy engine (domain allow/deny, origin scoping, budgets,
+human-in-the-loop) *before* the action executes — the enforcing half. Crucially, the
+enforcement is on where the browser actually **lands**, not on which tool was named:
+a click or a form submit that navigates to a denied origin is caught and reversed,
+because a policy that only inspects the `navigate` tool is a policy with a side
+door. The labeling half has to cover *every* path page-controlled bytes take into
+the context, not just the obvious one — so the adversarial fixtures plant
+instructions across seven of them: hidden page text, a fake "assistant directive"
+block, a poisoned WebMCP tool description *and* a poisoned tool result, an embedded
+iframe, an open shadow root, and the page title (which — a bug this suite caught —
+used to render outside the untrusted fence). An eighth is an *action* injection —
+"navigate to this attacker page" — run under an allowlist policy, so the enforcing
+half does the catching, not the model. The agent ignored all eight, **unanimously
+across three trials**, and a materially smaller model (Haiku) did too. The sharper
+test — a *weaker* model that obeys while the policy still contains the blast radius
+— hasn't fired yet, and the reason is worth stating plainly: I couldn't find a
+Claude model that obeys, so the deterministic containment tests (a scripted,
+fully-obedient model, blocked every time) carry that proof for now. But the point is
+that the defense is a boundary, not a please.
 
 ## 5. WebMCP will split the web in two, so the runtime must be hybrid
 

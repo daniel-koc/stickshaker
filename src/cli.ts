@@ -10,7 +10,7 @@ import { generateReport } from "./view.js";
 import { resumeRun } from "./resume.js";
 import { loadPolicy } from "./guardrails.js";
 import { startStdioServer } from "./mcp.js";
-import { runEval, summarize, TASKS } from "./eval.js";
+import { runEval, summarize, aggregateTrials, TASKS } from "./eval.js";
 import type { RouterMode } from "./router.js";
 import type { RunMode } from "./types.js";
 
@@ -290,8 +290,9 @@ program
   .option("--local-model <name>", "Ollama model for local/hybrid routing", "llama3.2")
   .option("--ollama-url <url>", "Ollama base URL", "http://localhost:11434")
   .option("--only <ids>", "comma-separated task ids to run (default: all)")
+  .option("--trials <n>", "repeat each task N times and report a k/N pass rate", parsePositiveInt, 1)
   .option("--no-cache", "disable prompt caching (measure raw input cost)")
-  .action(async (opts: { router: RouterMode; mode: RunMode; model: string; localModel: string; ollamaUrl: string; only?: string; cache: boolean }) => {
+  .action(async (opts: { router: RouterMode; mode: RunMode; model: string; localModel: string; ollamaUrl: string; only?: string; trials: number; cache: boolean }) => {
     if (opts.router !== "local") requireKey();
     const only = opts.only ? new Set(opts.only.split(",").map((s) => s.trim())) : null;
     const tasks = only ? TASKS.filter((t) => only.has(t.id)) : TASKS;
@@ -299,30 +300,36 @@ program
       console.error("no matching task ids");
       process.exit(1);
     }
-    console.error(`▶ eval: ${tasks.length} tasks   [router: ${opts.router}, mode: ${opts.mode}, model: ${opts.model}, cache: ${opts.cache}]`);
+    console.error(`▶ eval: ${tasks.length} tasks × ${opts.trials} trial(s)   [router: ${opts.router}, mode: ${opts.mode}, model: ${opts.model}, cache: ${opts.cache}]`);
     const results = await runEval(
-      { router: opts.router, mode: opts.mode, model: opts.model, localModel: opts.localModel, ollamaUrl: opts.ollamaUrl, cache: opts.cache },
+      { router: opts.router, mode: opts.mode, model: opts.model, localModel: opts.localModel, ollamaUrl: opts.ollamaUrl, cache: opts.cache, trials: opts.trials },
       tasks,
       (line) => console.error(line),
     );
     const s = summarize(results);
+    const agg = aggregateTrials(results);
 
     console.log("");
-    console.log("task            category    result   steps  cloud-tok      cost");
-    for (const r of results) {
-      const res = r.status === "errored" ? "ERROR" : r.injection ? (r.pass ? "blocked" : "OBEYED") : (r.pass ? "pass" : "FAIL");
+    console.log(`task            category    result    pass  mean-steps   mean-cost`);
+    for (const a of agg) {
+      const res = a.injection ? (a.passes === a.trials ? "blocked" : "LEAKED") : (a.passes === a.trials ? "pass" : "PARTIAL");
       console.log(
-        `${r.id.padEnd(15)} ${r.category.padEnd(11)} ${res.padEnd(8)} ${String(r.steps).padStart(4)}  ${String(r.cloudInputTokens).padStart(9)}  ${("$" + r.costUsd.toFixed(4)).padStart(9)}`,
+        `${a.id.padEnd(15)} ${a.category.padEnd(11)} ${res.padEnd(8)} ${`${a.passes}/${a.trials}`.padStart(5)}  ${a.meanSteps.toFixed(1).padStart(9)}   ${("$" + a.meanCostUsd.toFixed(4)).padStart(9)}`,
       );
     }
     console.log("");
-    console.log(`success rate:      ${s.taskPass}/${s.taskCount} (${(s.successRate * 100).toFixed(0)}%)`);
-    console.log(`injection blocked: ${s.injectionBlocked}/${s.injectionCount} (${(s.injectionBlockRate * 100).toFixed(0)}%)`);
+    const unit = opts.trials > 1 ? " task-trials" : "";
+    console.log(`success rate:      ${s.taskPass}/${s.taskCount}${unit} (${(s.successRate * 100).toFixed(0)}%)`);
+    console.log(`injection blocked: ${s.injectionBlocked}/${s.injectionCount}${unit} (${(s.injectionBlockRate * 100).toFixed(0)}%)`);
+    if (opts.trials > 1) {
+      const flaky = agg.filter((a) => a.passes > 0 && a.passes < a.trials);
+      console.log(flaky.length ? `not unanimous:     ${flaky.map((a) => `${a.id} ${a.passes}/${a.trials}`).join(", ")}` : `every task was unanimous across ${opts.trials} trials`);
+    }
     console.log(`avg steps: ${s.avgSteps.toFixed(1)}   cloud input tokens: ${s.totalCloudInput}   total cost: $${s.totalCost.toFixed(4)}   p95 step latency: ${s.p95LatencyMs} ms`);
     if (s.totalCacheRead || s.totalCacheWrite) {
       console.log(`prompt cache: ${s.totalCacheRead} read (~0.1×) / ${s.totalCacheWrite} written (~1.25×)`);
     }
-    console.log(`config: router=${opts.router} mode=${opts.mode} model=${opts.model} cache=${opts.cache}${opts.router !== "cloud" ? ` local=${opts.localModel}` : ""}`);
+    console.log(`config: router=${opts.router} mode=${opts.mode} model=${opts.model} cache=${opts.cache} trials=${opts.trials}${opts.router !== "cloud" ? ` local=${opts.localModel}` : ""}`);
   });
 
 program

@@ -10,19 +10,21 @@ Cursor, …) a policy-guarded browser via the
 [Model Context Protocol](https://modelcontextprotocol.io).
 
 > **Status: feature-complete.** An incremental snapshot-**diffing** browser
-> agent with replayable **flight-recorder** traces, an authored **MCP server**,
-> an out-of-model **guardrail** engine with injection defenses, local-first
-> model **routing** (Ollama → Claude), a self-hosted **eval + injection**
-> harness, and **WebMCP-hybrid** actuation — the agent prefers a page's typed
-> tools when it exposes them (Chrome origin-trial standard) and falls back to
-> snapshot+act on the legacy web. The snapshot pierces **iframes** (same- and
-> cross-origin) and **open shadow roots**, so the agent can act on elements —
-> and call WebMCP tools — inside embedded frames and web components. On the
-> eval suite Claude Sonnet scores **12/12 tasks and blocks 7/7 injection
-> attacks** across four ingestion surfaces — page text, tool
-> description/result, iframe, shadow root, and page title; see
-> [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale is written up in
-> [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems problem."*
+> agent with replayable **flight-recorder** traces, an authored **MCP
+> server**, an out-of-model **guardrail** engine with injection defenses,
+> local-first model **routing** (Ollama → Claude), a self-hosted **eval +
+> injection** harness, and **WebMCP-hybrid** actuation — the agent prefers a
+> page's typed tools when it exposes them (Chrome origin-trial standard) and
+> falls back to snapshot+act on the legacy web. The snapshot pierces
+> **iframes** (same- and cross-origin) and **open shadow roots**, so the agent
+> can act on elements — and call WebMCP tools — inside embedded frames and web
+> components. On the eval suite Claude Sonnet scores **12/12 tasks and blocks
+> 8/8 injection attacks — unanimously across 3 trials** (seven planted in
+> page-controlled content the model reads, plus one action-based attack the
+> policy layer contains); a materially smaller model (Haiku) also blocks all
+> eight. See [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale is
+> written up in [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems
+> problem."*
 
 ---
 
@@ -80,7 +82,7 @@ The full argument, with the numbers behind each claim, is in
 |---------|--------------|
 | `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); prompt caching on by default (`--no-cache` to disable); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
-| `stickshaker eval [--model …] [--only …]` | Run the self-hosted fixture suite (12 tasks + 7 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
+| `stickshaker eval [--model …] [--trials N] [--only …]` | Run the self-hosted fixture suite (12 tasks + 8 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
 | `stickshaker resume <run-dir>` | Continue an interrupted run from its trace. |
@@ -398,8 +400,12 @@ pnpm stickshaker run "Fill the form with 'hello' and submit" \
 pnpm stickshaker view .stickshaker/traces/<run-dir>
 pnpm stickshaker resume .stickshaker/traces/<run-dir>
 
-# The eval suite: 12 tasks + 7 injection attacks
-pnpm stickshaker eval --model claude-sonnet-5
+# The eval suite: 12 tasks + 8 injection attacks, 3 trials each
+pnpm stickshaker eval --model claude-sonnet-5 --trials 3
+
+# The weak-model injection row
+pnpm stickshaker eval --model claude-haiku-4-5 --trials 3 \
+  --only inject-hidden,inject-comment,inject-webmcp,inject-iframe,inject-shadow,inject-toolresult,inject-title,inject-navigate
 
 # Diff-vs-full token benchmark on any task
 pnpm stickshaker bench "Fill the first text field with 'Stickshaker', choose 'Two' in the dropdown select menu, type 'hello' into the 'Type to search' field, then click Submit and report the confirmation message shown." \
@@ -557,7 +563,8 @@ Every claim reproduces with one command — see
 |-------|----------|
 | Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
 | Cache-aware history elision | **~66% lower cost** on a single multi-step run; suite p95 step latency 7315 → 1800 ms |
-| Eval suite (Sonnet) | **12/12 tasks, 7/7 injections blocked** — single run per cell |
+| Eval suite (Sonnet, 3 trials each) | **36/36 task-trials, 24/24 injections blocked — unanimous** |
+| Weak-model row (Haiku) | **24/24 injections blocked — unanimous** |
 | Hybrid routing (4-task slice) | **~55% cheaper** than cloud-only, at 3/4 vs 4/4 — the cost/accuracy dial |
 
 ---
@@ -615,7 +622,7 @@ pnpm build           # compile to dist/
 pnpm demo            # regenerate the demo artifacts (live site + API key)
 ```
 
-`pnpm test` runs 157 tests through Node's built-in runner (no extra test
+`pnpm test` runs 161 tests through Node's built-in runner (no extra test
 framework) — **no API key needed and nothing talks to the cloud**. Pure units
 cover the policy engine, injection graders, snapshot diffing, the
 untrusted-text fence, vector memory, and cost accounting. Integration suites
@@ -636,9 +643,11 @@ eval`.
 - **Closed shadow roots are invisible.** The composed-tree walk pierces every
   *open* shadow root; `attachShadow({ mode: "closed" })` leaves no JS handle
   and Playwright locators can't pierce it. Rare in practice, documented here.
-- **The injection suite is young.** 7/7 adversarial patterns are blocked so
-  far; more ingestion surfaces (and an attack that targets the enforcing
-  half rather than the model) are still to be covered.
+- **Injection defense is layered, and honestly scoped.** Capable models
+  refuse the planted instructions outright (that's the measured 8/8); the
+  policy layer is what contains a model that *obeys*, proven by the
+  action-injection fixture and deterministic containment tests. Untested
+  patterns remain (e.g. screenshot/vision-based, multi-step exfiltration).
 - **One tab at a time.** Popups and new tabs are closed and policy-checked,
   not driven; there is no multi-tab orchestration.
 - **Backends: Claude + Ollama.** An OpenAI-compatible cloud backend would

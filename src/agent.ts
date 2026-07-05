@@ -57,6 +57,12 @@ export interface AgentOptions {
   ollamaUrl?: string | undefined;
   /** Path of the policy file, recorded in the trace so a resume can reload it. */
   policyPath?: string | undefined;
+  /**
+   * Origin the sameOriginOnly policy scopes to; defaults to startUrl's origin.
+   * Resume passes the ORIGINAL run's origin here — its startUrl is the page the
+   * run stopped on, so deriving from that would silently re-anchor the scope.
+   */
+  taskOrigin?: string | undefined;
   onStep?: (line: string) => void;
 }
 
@@ -93,6 +99,10 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   const log = opts.onStep ?? (() => {});
   const messages: Anthropic.MessageParam[] = [];
 
+  // sameOriginOnly scoping. Recorded in the trace so resumes keep the original
+  // anchor instead of re-deriving it from wherever the run stopped.
+  const taskOrigin = opts.taskOrigin ?? (opts.startUrl ? safeOrigin(opts.startUrl) : undefined);
+
   // Flight recorder + OpenTelemetry (only when tracing is requested).
   const meta: RunMeta = {
     task: opts.task,
@@ -104,6 +114,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     ...(opts.localModel ? { localModel: opts.localModel } : {}),
     ...(opts.ollamaUrl ? { ollamaUrl: opts.ollamaUrl } : {}),
     ...(opts.policyPath ? { policyPath: opts.policyPath } : {}),
+    ...(taskOrigin ? { taskOrigin } : {}),
     ...(opts.resumedFrom ? { resumedFrom: opts.resumedFrom } : {}),
   };
   const runDir = opts.traceDir ? join(opts.traceDir, runDirName(opts.task)) : undefined;
@@ -166,12 +177,6 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   };
 
   const policy = opts.policy ?? EMPTY_POLICY;
-  let taskOrigin: string | undefined;
-  try {
-    if (opts.startUrl) taskOrigin = new URL(opts.startUrl).origin;
-  } catch {
-    /* invalid start URL — origin scoping simply won't apply */
-  }
   const maxSteps = Math.min(opts.maxSteps, policy.budgets?.maxSteps ?? Number.POSITIVE_INFINITY);
 
   // Resolve a destination URL against the policy, running the approval gate for

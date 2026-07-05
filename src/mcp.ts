@@ -92,9 +92,22 @@ class Interactive {
   private session?: BrowserSession;
   private mem?: PageMemory;
   private pages = 0;
+  private chain: Promise<unknown> = Promise.resolve();
   taskOrigin?: string;
 
   constructor(private readonly ollamaUrl: string, private readonly embedModel: string, private readonly policy: Policy) {}
+
+  /**
+   * Serialize browser-touching tool handlers. The MCP SDK dispatches requests as
+   * they arrive, but there is one page — and an action's policy enforcement must
+   * run atomically with the action, or a concurrent call could interleave between
+   * them (or snapshot a page mid-navigation).
+   */
+  run<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(fn, fn);
+    this.chain = next.then(() => undefined, () => undefined);
+    return next;
+  }
 
   private async ensure(): Promise<BrowserSession> {
     if (!this.session) this.session = await BrowserSession.launch({ headless: true });
@@ -284,7 +297,7 @@ export function buildServer(opts: {
         "Return the interactive elements (each with a [ref]) and visible text of the current page. Optionally navigate to a URL first.",
       inputSchema: { url: z.string().optional().describe("If given, navigate here first.") },
     },
-    async ({ url }) => {
+    async ({ url }) => interactive.run(async () => {
       let snap: Snapshot;
       if (url) {
         const decision = evaluateAction(policy, { tool: "navigate", input: { url }, currentUrl: interactive.currentUrl(), taskOrigin: interactive.taskOrigin });
@@ -300,7 +313,7 @@ export function buildServer(opts: {
       const blocked = await enforceDestination(interactive, policy);
       if (blocked) return blocked;
       return textResult(formatFull(snap) + (await pageToolsSuffix(interactive)));
-    },
+    }),
   );
 
   server.registerTool(
@@ -321,7 +334,7 @@ export function buildServer(opts: {
         args: z.record(z.string(), z.unknown()).optional().describe('For tool="webmcp": the arguments object.'),
       },
     },
-    async (args) => {
+    async (args) => interactive.run(async () => {
       // Page-provided (WebMCP) tool call.
       if (args.tool === "webmcp") {
         const pageName = args.name ?? "";
@@ -348,7 +361,7 @@ export function buildServer(opts: {
       const blocked = await enforceDestination(interactive, policy);
       if (blocked) return blocked;
       return textResult(`${result.ok ? "OK" : "ERROR"}: ${result.detail}\n\n${formatFull(snapshot)}`, !result.ok);
-    },
+    }),
   );
 
   server.registerTool(

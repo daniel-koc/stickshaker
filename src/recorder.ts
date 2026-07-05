@@ -15,6 +15,8 @@ export interface RunMeta {
   localModel?: string;
   ollamaUrl?: string;
   policyPath?: string;
+  /** sameOriginOnly anchor, recorded so a resume keeps the original scope. */
+  taskOrigin?: string;
 }
 
 export interface RunSummary {

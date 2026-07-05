@@ -48,6 +48,7 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     localModel?: string;
     ollamaUrl?: string;
     policyPath?: string;
+    taskOrigin?: string;
   };
   const events: TraceEvent[] = readFileSync(tracePath, "utf8")
     .split("\n")
@@ -88,6 +89,17 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     }
   }
 
+  // Keep the ORIGINAL origin scope: startUrl below is the page the run stopped
+  // on, so letting runAgent derive taskOrigin from it would silently re-anchor a
+  // sameOriginOnly policy to wherever the interruption happened.
+  const taskOrigin = meta.taskOrigin ?? (() => {
+    try {
+      return meta.startUrl ? new URL(meta.startUrl).origin : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
   return runAgent({
     task: meta.task,
     startUrl: lastUrl,
@@ -99,6 +111,7 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     priorContext,
     traceDir: opts.traceDir,
     resumedFrom: runDir,
+    ...(taskOrigin ? { taskOrigin } : {}),
     ...(meta.router ? { router: meta.router } : {}),
     ...(meta.localModel ? { localModel: meta.localModel } : {}),
     ...(meta.ollamaUrl ? { ollamaUrl: meta.ollamaUrl } : {}),

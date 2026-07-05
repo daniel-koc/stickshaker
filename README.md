@@ -578,7 +578,7 @@ pnpm typecheck       # tsc --noEmit over src, tests, and scripts
 pnpm build           # compile to dist/
 ```
 
-`pnpm test` runs 121 tests through Node's built-in runner (no extra test
+`pnpm test` runs 128 tests through Node's built-in runner (no extra test
 framework) — **no API key needed and nothing talks to the cloud**. Pure units
 cover the policy engine, injection graders, snapshot diffing, the
 untrusted-text fence, vector memory, and cost accounting. Integration suites

@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent, type AgentResult, type ApproveFn } from "./agent.js";
+import { parseTrace } from "./recorder.js";
 import { loadPolicy, type Policy } from "./guardrails.js";
 import type { RouterMode } from "./router.js";
 import type { RunMode } from "./types.js";
@@ -39,7 +40,7 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     throw new Error(`not a run directory (missing run.json / trace.jsonl): ${runDir}`);
   }
 
-  const meta = JSON.parse(readFileSync(runJsonPath, "utf8")) as {
+  let meta: {
     task: string;
     startUrl?: string;
     model: string;
@@ -50,10 +51,14 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     policyPath?: string;
     taskOrigin?: string;
   };
-  const events: TraceEvent[] = readFileSync(tracePath, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => JSON.parse(l) as TraceEvent);
+  try {
+    meta = JSON.parse(readFileSync(runJsonPath, "utf8"));
+  } catch {
+    throw new Error(`cannot resume: run.json in ${runDir} is corrupt or unreadable`);
+  }
+  // Lenient: an interrupted run (the case resume exists for) can leave a torn
+  // final trace line; skip it rather than refusing to resume.
+  const events = parseTrace(readFileSync(tracePath, "utf8")) as unknown as TraceEvent[];
 
   const results = new Map<number, { ok: boolean; detail: string }>();
   for (const e of events) {

@@ -28,6 +28,24 @@ export interface RunSummary {
   finishedAt: string;
 }
 
+/**
+ * Parse a trace.jsonl body into events, skipping any malformed line. A run killed
+ * mid-append leaves a torn final line — and viewing or resuming an interrupted run
+ * is exactly when that happens, so a single bad line must not sink the whole read.
+ */
+export function parseTrace(raw: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line) continue;
+    try {
+      out.push(JSON.parse(line) as Record<string, unknown>);
+    } catch {
+      /* torn/corrupt line (e.g. a killed process mid-write) — skip it */
+    }
+  }
+  return out;
+}
+
 /** A filesystem-safe run directory name: timestamp + task slug. */
 export function runDirName(task: string): string {
   const iso = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);

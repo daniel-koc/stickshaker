@@ -320,6 +320,25 @@ describe("resume", () => {
     assert.match(prompts[0]!, new RegExp(site.ok), "reason anchored to the ORIGINAL task origin");
   });
 
+  it("resumes an interrupted run whose trace has a torn final line", async () => {
+    const dir = join(tmp, "torn-run");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "run.json"), JSON.stringify({
+      task: "crafted", startUrl: `${site.ok}/home`, model: "x", mode: "diff",
+      router: "local", localModel: "fake", ollamaUrl: ollama.url, status: "running",
+    }));
+    // Two whole events plus a torn final append, as a killed process would leave.
+    writeFileSync(join(dir, "trace.jsonl"),
+      JSON.stringify({ seq: 0, type: "observation", step: 0, url: `${site.ok}/home` }) + "\n" +
+      JSON.stringify({ seq: 1, type: "action", step: 1, tool: "scroll", input: { direction: "down" } }) + "\n" +
+      '{"seq":2,"type":"observation","step":1,"bo');
+
+    ollama.script = [{ name: "done", args: { answer: "resumed cleanly" } }];
+    const r = await resumeRun(dir, { maxSteps: 2, keyframeInterval: 5, headless: true, traceDir: tmp });
+    assert.equal(r.status, "done");
+    assert.equal(r.message, "resumed cleanly");
+  });
+
   it("warns loudly when the recorded policy file is gone", async () => {
     const dir = join(tmp, "policyless-run");
     mkdirSync(dir, { recursive: true });

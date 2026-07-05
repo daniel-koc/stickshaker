@@ -8,6 +8,7 @@ import { formatFull } from "./observe.js";
 import { runAgent } from "./agent.js";
 import { evaluateAction, evaluateDestination, isGuardedTool, EMPTY_POLICY, type Policy } from "./guardrails.js";
 import { PageMemory, HashEmbedder, OllamaEmbedder } from "./memory.js";
+import { parseTrace } from "./recorder.js";
 import { ollamaAvailable } from "./ollama.js";
 import type { ActionResult, Snapshot } from "./types.js";
 
@@ -391,18 +392,10 @@ export function buildServer(opts: {
       if (!existsSync(runJson)) return textResult(`No run.json in ${run_dir}`, true);
       const summary = JSON.parse(readFileSync(runJson, "utf8")) as Record<string, unknown>;
       const tracePath = join(target, "trace.jsonl");
-      const events = existsSync(tracePath) ? readFileSync(tracePath, "utf8").split("\n").filter(Boolean) : [];
+      const events = existsSync(tracePath) ? parseTrace(readFileSync(tracePath, "utf8")) : [];
       const tail = events
         .slice(-8)
-        .map((l) => {
-          try {
-            const e = JSON.parse(l) as { type: string; step?: number };
-            return `  ${e.type}${e.step != null ? " #" + e.step : ""}`;
-          } catch {
-            return "";
-          }
-        })
-        .filter(Boolean)
+        .map((e) => `  ${String(e.type)}${e.step != null ? " #" + String(e.step) : ""}`)
         .join("\n");
       return textResult(
         `task: ${summary.task}\nstatus: ${summary.status}   steps: ${summary.steps ?? "?"}   cost: $${Number(summary.costUsd ?? 0).toFixed(4)}\nlast events:\n${tail}`,

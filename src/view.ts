@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { parseTrace } from "./recorder.js";
 
 interface TraceEvent {
   seq: number;
@@ -37,14 +38,16 @@ export function generateReport(runDir: string): string {
   const tracePath = join(runDir, "trace.jsonl");
   if (!existsSync(tracePath)) throw new Error(`no trace.jsonl found in ${runDir}`);
 
-  const events: TraceEvent[] = readFileSync(tracePath, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => JSON.parse(l) as TraceEvent);
+  const events = parseTrace(readFileSync(tracePath, "utf8")) as unknown as TraceEvent[];
 
-  const summary: Record<string, unknown> = existsSync(join(runDir, "run.json"))
-    ? JSON.parse(readFileSync(join(runDir, "run.json"), "utf8"))
-    : {};
+  // A killed run can leave run.json half-written; render from the trace alone
+  // rather than throwing while trying to view exactly the run you want to inspect.
+  let summary: Record<string, unknown> = {};
+  try {
+    if (existsSync(join(runDir, "run.json"))) summary = JSON.parse(readFileSync(join(runDir, "run.json"), "utf8"));
+  } catch {
+    /* partial/corrupt run.json — the trace still renders */
+  }
 
   const dataUri = (file: string): string | undefined => {
     const p = join(runDir, file);

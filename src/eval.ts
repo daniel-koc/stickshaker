@@ -119,35 +119,58 @@ export async function runEval(
   const results: TaskResult[] = [];
   try {
     for (const t of tasks) {
-      const res = await runAgent({
-        task: t.prompt,
-        startUrl: server.url + t.path,
-        model: cfg.model,
-        mode: cfg.mode,
-        maxSteps: t.maxSteps,
-        keyframeInterval: 5,
-        headless: true,
-        router: cfg.router,
-        localModel: cfg.localModel,
-        ollamaUrl: cfg.ollamaUrl,
-      });
-      const pass = t.grade(res.message);
-      results.push({
-        id: t.id,
-        category: t.category,
-        injection: Boolean(t.injection),
-        pass,
-        steps: res.steps,
-        status: res.status,
-        cloudInputTokens: res.usage.inputTokens,
-        costUsd: res.costUsd,
-        localSteps: res.routing?.localSteps ?? 0,
-        cloudSteps: res.routing?.cloudSteps ?? res.steps,
-        latencies: res.telemetry.map((s) => s.latencyMs),
-        answer: res.message,
-      });
-      const tag = t.injection ? (pass ? "BLOCKED" : "OBEYED ") : (pass ? "PASS" : "FAIL");
-      onProgress?.(`  ${tag.padEnd(7)} ${t.id.padEnd(15)} ${String(res.steps).padStart(2)} steps  $${res.costUsd.toFixed(4)}`);
+      try {
+        const res = await runAgent({
+          task: t.prompt,
+          startUrl: server.url + t.path,
+          model: cfg.model,
+          mode: cfg.mode,
+          maxSteps: t.maxSteps,
+          keyframeInterval: 5,
+          headless: true,
+          router: cfg.router,
+          localModel: cfg.localModel,
+          ollamaUrl: cfg.ollamaUrl,
+        });
+        const pass = t.grade(res.message);
+        results.push({
+          id: t.id,
+          category: t.category,
+          injection: Boolean(t.injection),
+          pass,
+          steps: res.steps,
+          status: res.status,
+          cloudInputTokens: res.usage.inputTokens,
+          costUsd: res.costUsd,
+          localSteps: res.routing?.localSteps ?? 0,
+          cloudSteps: res.routing?.cloudSteps ?? res.steps,
+          latencies: res.telemetry.map((s) => s.latencyMs),
+          answer: res.message,
+        });
+        const tag = t.injection ? (pass ? "BLOCKED" : "OBEYED ") : (pass ? "PASS" : "FAIL");
+        onProgress?.(`  ${tag.padEnd(7)} ${t.id.padEnd(15)} ${String(res.steps).padStart(2)} steps  $${res.costUsd.toFixed(4)}`);
+      } catch (e) {
+        // One task throwing (an API error after retries, an unexpected browser
+        // fault) must not sink the whole suite and discard every result so far.
+        // Record it as errored and carry on; a failed grade and an errored run are
+        // both "not a pass", so the rates stay honest.
+        const msg = e instanceof Error ? e.message.split("\n")[0]! : String(e);
+        results.push({
+          id: t.id,
+          category: t.category,
+          injection: Boolean(t.injection),
+          pass: false,
+          steps: 0,
+          status: "errored",
+          cloudInputTokens: 0,
+          costUsd: 0,
+          localSteps: 0,
+          cloudSteps: 0,
+          latencies: [],
+          answer: `error: ${msg}`,
+        });
+        onProgress?.(`  ${"ERROR".padEnd(7)} ${t.id.padEnd(15)} ${msg}`);
+      }
     }
   } finally {
     await server.close();

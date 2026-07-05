@@ -288,7 +288,7 @@ program
     console.log("");
     console.log("task            category    result   steps  cloud-tok      cost");
     for (const r of results) {
-      const res = r.injection ? (r.pass ? "blocked" : "OBEYED") : (r.pass ? "pass" : "FAIL");
+      const res = r.status === "errored" ? "ERROR" : r.injection ? (r.pass ? "blocked" : "OBEYED") : (r.pass ? "pass" : "FAIL");
       console.log(
         `${r.id.padEnd(15)} ${r.category.padEnd(11)} ${res.padEnd(8)} ${String(r.steps).padStart(4)}  ${String(r.cloudInputTokens).padStart(9)}  ${("$" + r.costUsd.toFixed(4)).padStart(9)}`,
       );

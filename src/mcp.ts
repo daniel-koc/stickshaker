@@ -390,7 +390,14 @@ export function buildServer(opts: {
       }
       const runJson = join(target, "run.json");
       if (!existsSync(runJson)) return textResult(`No run.json in ${run_dir}`, true);
-      const summary = JSON.parse(readFileSync(runJson, "utf8")) as Record<string, unknown>;
+      // A run killed mid-write can leave a half-written run.json; report that
+      // cleanly rather than throwing (matches view/resume tolerance).
+      let summary: Record<string, unknown>;
+      try {
+        summary = JSON.parse(readFileSync(runJson, "utf8")) as Record<string, unknown>;
+      } catch {
+        return textResult(`run.json in ${run_dir} is corrupt or incomplete (the run may have been interrupted mid-write).`, true);
+      }
       const tracePath = join(target, "trace.jsonl");
       const events = existsSync(tracePath) ? parseTrace(readFileSync(tracePath, "utf8")) : [];
       const tail = events

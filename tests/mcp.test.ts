@@ -238,10 +238,18 @@ describe("get_trace confinement", () => {
       const runDir = join(traceDir, "runx");
       mkdirSync(runDir);
       writeFileSync(join(runDir, "run.json"), JSON.stringify({ task: "t", status: "done", steps: 2, costUsd: 0.01 }));
-      writeFileSync(join(runDir, "trace.jsonl"), `${JSON.stringify({ type: "action", step: 1 })}\n${JSON.stringify({ type: "run_end" })}\n`);
+      // A torn final trace line (killed mid-append) must not sink the summary.
+      writeFileSync(join(runDir, "trace.jsonl"), `${JSON.stringify({ type: "action", step: 1 })}\n${JSON.stringify({ type: "run_end" })}\n{"type":"scr`);
       const ok = await mcp.call("get_trace", { run_dir: runDir });
       assert.match(ok, /status: done/);
       assert.match(ok, /action #1/);
+
+      // A half-written run.json reports cleanly instead of throwing.
+      const tornDir = join(traceDir, "torn");
+      mkdirSync(tornDir);
+      writeFileSync(join(tornDir, "run.json"), '{"task":"x","stat');
+      const torn = await mcp.call("get_trace", { run_dir: tornDir });
+      assert.match(torn, /corrupt or incomplete/);
     } finally {
       await mcp.close();
       rmSync(traceDir, { recursive: true, force: true });

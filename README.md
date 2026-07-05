@@ -26,6 +26,25 @@ Cursor, …) a policy-guarded browser via the
 
 ---
 
+## Demo
+
+![Stickshaker driving Hacker News, three steps, each recorded to a trace](docs/demo-filmstrip.png)
+
+*One task, three steps: Hacker News → the Ask HN section → the top post's
+comments, then report the title and comment count — every step captured to a
+replayable trace, for $0.05.*
+
+The flight recorder is the signature.
+**[`docs/demo-report.html`](docs/demo-report.html)** is the real report from
+that exact run — download and open the single self-contained file
+(screenshots embedded, no server needed) to click through every step: the
+screenshot, the agent's reasoning, the exact observation sent to the model,
+and per-step tokens and latency. Regenerate both artifacts with `pnpm demo` —
+it drives a live site, so the steps drift; the deterministic path is
+`stickshaker eval` against the self-hosted fixtures.
+
+---
+
 ## Why
 
 Most "LLM browses the web" loops re-send the whole page every turn, trust the
@@ -593,6 +612,7 @@ pnpm stickshaker …   # run the CLI via tsx (no build step)
 pnpm test            # full test suite (Node test runner; no API key, no cloud)
 pnpm typecheck       # tsc --noEmit over src, tests, and scripts
 pnpm build           # compile to dist/
+pnpm demo            # regenerate the demo artifacts (live site + API key)
 ```
 
 `pnpm test` runs 157 tests through Node's built-in runner (no extra test
@@ -623,6 +643,8 @@ eval`.
   not driven; there is no multi-tab orchestration.
 - **Backends: Claude + Ollama.** An OpenAI-compatible cloud backend would
   slot into the router, but no GPT column exists today.
+- **The demo drives a live site**, so its exact steps drift over time; the
+  eval fixtures are the deterministic, reproducible path.
 
 ---
 

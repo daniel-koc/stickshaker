@@ -69,11 +69,16 @@ scoping, budgets, human-in-the-loop) *before* the action executes — the
 enforcing half. Crucially, the enforcement is on where the browser actually
 **lands**, not on which tool was named: a click or a form submit that
 navigates to a denied origin is caught and reversed, because a policy that
-only inspects the `navigate` tool is a policy with a side door. On the adversarial eval fixtures — white-on-white text, a
-fake "assistant directive" block, and a poisoned WebMCP tool description — the agent
-answered the real question and ignored the injection **3/3**. Three patterns and one
-capable model isn't proof — but the point is that the defense is a boundary, not a
-please.
+only inspects the `navigate` tool is a policy with a side door. The labeling half has to cover *every* path page-controlled
+bytes take into the context, not just the obvious one — so the adversarial fixtures
+plant instructions across seven of them: hidden page text, a fake "assistant
+directive" block, a poisoned WebMCP tool description *and* a poisoned tool result, an
+embedded iframe, an open shadow root, and the page title (which — a bug this suite
+caught — used to render outside the untrusted fence). The agent answered the real
+question and ignored the injection **7/7**. Seven patterns and one capable model
+isn't proof — the sharper test is a *weaker* model that obeys while the policy layer
+still contains the blast radius — but the point is that the defense is a boundary,
+not a please.
 
 ## 5. WebMCP will split the web in two, so the runtime must be hybrid
 

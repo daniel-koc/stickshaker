@@ -378,6 +378,25 @@ describe("frame policy filter (frameAllowed)", () => {
     }
   });
 
+  it("refuses to actuate a ref inside a frame that became disallowed after enumeration", async () => {
+    let allow = true;
+    const fb = await BrowserSession.launch({ headless: true, frameAllowed: () => allow });
+    try {
+      await fb.navigate(`${site.ok}/framehost`);
+      const reveal = (await fb.snapshot()).elements.find((e) => e.name === "Reveal panel");
+      assert.ok(reveal, "frame element enumerated while allowed");
+      allow = false; // e.g. the frame navigated, or the session's origin anchor was set
+      const r = await fb.click(reveal.ref);
+      assert.equal(r.ok, false);
+      assert.match(r.detail, /policy-denied origin/);
+      const t = await fb.type(reveal.ref, "x", false);
+      assert.equal(t.ok, false);
+      assert.match(t.detail, /policy-denied origin/);
+    } finally {
+      await fb.close();
+    }
+  });
+
   it("never offers a filtered frame's WebMCP tools, and refuses a call if the frame becomes disallowed later", async () => {
     let allow = true;
     const fb = await BrowserSession.launch({ headless: true, frameAllowed: () => allow });

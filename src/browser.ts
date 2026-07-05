@@ -1,4 +1,4 @@
-import { chromium, type Browser, type BrowserContext, type Page, type Frame } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page, type Frame, type Locator } from "playwright";
 import type { Snapshot, ActionResult, ElementInfo } from "./types.js";
 
 const MAX_ELEMENTS = 150;
@@ -429,22 +429,33 @@ export class BrowserSession {
     };
   }
 
-  /** Resolve a (possibly frame-qualified) ref to a Playwright locator in its frame. */
-  private locator(ref: string) {
+  /**
+   * Resolve a (possibly frame-qualified) ref to a locator in its frame, enforcing
+   * frame liveness and the frame policy. Fast, specific errors beat an 8s
+   * no-match timeout: the agent re-snapshots and replans immediately.
+   */
+  private resolveRef(ref: string): { loc: Locator } | { err: string } {
     const m = /^f(\d+):(\d+)$/.exec(ref);
-    if (m) {
-      const frame = this.frameById.get(Number(m[1]));
-      if (frame && !frame.isDetached()) return frame.locator(`[data-sk-ref="${m[2]}"]`);
-      // The frame is gone (detached / navigated away): return a locator that matches
-      // nothing, so the action fails cleanly and the agent re-snapshots and replans.
-      return this.page.mainFrame().locator(`[data-sk-ref="__detached_frame__"]`);
+    if (!m) return { loc: this.page.mainFrame().locator(`[data-sk-ref="${ref}"]`) };
+    const frame = this.frameById.get(Number(m[1]));
+    if (!frame || frame.isDetached()) {
+      return { err: `the frame for ref ${ref} is no longer on the page — take a fresh snapshot` };
     }
-    return this.page.mainFrame().locator(`[data-sk-ref="${ref}"]`);
+    // A frame can become disallowed after its refs were handed out (it navigated,
+    // or the MCP session's origin anchor was set by the first navigate). Actuating
+    // into it would be an action on a policy-denied document — refuse, exactly
+    // like callWebMcpTool refuses a call into such a frame.
+    if (this.frameAllowed && !this.frameAllowed(frame.url())) {
+      return { err: `the frame for ref ${ref} is on a policy-denied origin` };
+    }
+    return { loc: frame.locator(`[data-sk-ref="${m[2]}"]`) };
   }
 
   async click(ref: string): Promise<ActionResult> {
+    const r = this.resolveRef(ref);
+    if ("err" in r) return { ok: false, detail: `click failed on ${ref}: ${r.err}` };
     try {
-      await this.locator(ref).click({ timeout: ACTION_TIMEOUT_MS });
+      await r.loc.click({ timeout: ACTION_TIMEOUT_MS });
       await this.settle();
       return { ok: true, detail: `clicked element ${ref}` };
     } catch (e) {
@@ -453,11 +464,12 @@ export class BrowserSession {
   }
 
   async type(ref: string, text: string, submit: boolean): Promise<ActionResult> {
+    const r = this.resolveRef(ref);
+    if ("err" in r) return { ok: false, detail: `type failed on ${ref}: ${r.err}` };
     try {
-      const loc = this.locator(ref);
-      await loc.fill(text, { timeout: ACTION_TIMEOUT_MS });
+      await r.loc.fill(text, { timeout: ACTION_TIMEOUT_MS });
       if (submit) {
-        await loc.press("Enter");
+        await r.loc.press("Enter");
         await this.settle();
       }
       return { ok: true, detail: `typed into element ${ref}${submit ? " and submitted" : ""}` };
@@ -467,13 +479,14 @@ export class BrowserSession {
   }
 
   async selectOption(ref: string, value: string): Promise<ActionResult> {
+    const r = this.resolveRef(ref);
+    if ("err" in r) return { ok: false, detail: `select failed on ${ref}: ${r.err}` };
     try {
       // Try by value, then fall back to visible label.
-      const loc = this.locator(ref);
       try {
-        await loc.selectOption(value, { timeout: ACTION_TIMEOUT_MS });
+        await r.loc.selectOption(value, { timeout: ACTION_TIMEOUT_MS });
       } catch {
-        await loc.selectOption({ label: value }, { timeout: ACTION_TIMEOUT_MS });
+        await r.loc.selectOption({ label: value }, { timeout: ACTION_TIMEOUT_MS });
       }
       // Parity with click/type: a <select onchange> can navigate (a jump menu), so
       // let it commit before the caller snapshots.

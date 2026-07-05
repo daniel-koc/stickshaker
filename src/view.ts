@@ -50,6 +50,11 @@ export function generateReport(runDir: string): string {
   }
 
   const dataUri = (file: string): string | undefined => {
+    // The filename comes from the trace, which for a shared/foreign run dir is
+    // untrusted input: without this shape check a crafted "../../.env" event
+    // would embed an arbitrary file into a report built to be shared. The
+    // recorder only ever writes step-NN.png, so only that shape is honored.
+    if (!/^step-\d+\.png$/.test(file)) return undefined;
     const p = join(runDir, file);
     return existsSync(p) ? "data:image/png;base64," + readFileSync(p).toString("base64") : undefined;
   };

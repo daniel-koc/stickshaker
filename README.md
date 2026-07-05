@@ -628,7 +628,7 @@ pnpm build           # compile to dist/
 pnpm demo            # regenerate the demo artifacts (live site + API key)
 ```
 
-`pnpm test` runs 168 tests through Node's built-in runner (no extra test
+`pnpm test` runs 170 tests through Node's built-in runner (no extra test
 framework) — **no API key needed and nothing talks to the cloud**. Pure units
 cover the policy engine, injection graders, snapshot diffing, the
 untrusted-text fence, vector memory, and cost accounting. Integration suites

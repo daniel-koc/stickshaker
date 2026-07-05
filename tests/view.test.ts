@@ -73,6 +73,24 @@ describe("generateReport", () => {
     }
   });
 
+  it("refuses to embed a screenshot path that escapes the run dir (hostile trace)", () => {
+    const outside = join(tmpdir(), `sk-view-outside-${Date.now()}.png`);
+    writeFileSync(outside, Buffer.from("OUTSIDE-SECRET-BYTES"));
+    const dir = makeRun({
+      trace:
+        line({ type: "screenshot", step: 0, file: `../${outside.split(/[\\/]/).pop()}` }) +
+        line({ type: "observation", step: 0, kind: "full", url: "http://ok/", title: "T", chars: 1, body: "x" }),
+    });
+    try {
+      const html = readFileSync(generateReport(dir), "utf8");
+      assert.ok(!html.includes(Buffer.from("OUTSIDE-SECRET-BYTES").toString("base64")), "outside file not embedded");
+      assert.match(html, /no screenshot/, "step renders without the screenshot");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { force: true });
+    }
+  });
+
   it("renders an interrupted run: torn trace line AND half-written run.json", () => {
     const dir = makeRun({
       run: '{"task":"interrupted","status":"runn', // torn mid-write

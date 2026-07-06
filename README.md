@@ -4,6 +4,11 @@
 browser, cheaply, observably, and behind guardrails it can't talk its way
 past.**
 
+*Named for the [stick shaker](https://en.wikipedia.org/wiki/Stick_shaker): the
+stall-warning device that acts on an aircraft's controls no matter what the
+pilot currently believes. Same principle here — the agent's security boundary
+is enforced in code, not requested in a prompt.*
+
 It runs as a **CLI** (one-shot tasks, evals, benchmarks) and as an **MCP
 server** that gives any MCP-enabled client (Claude Code, Claude Desktop,
 Cursor, …) a policy-guarded browser via the

@@ -7,10 +7,13 @@ The interesting problems in browser automation aren't prompt problems. They're t
 same problems I spent years on in a browser engine: how you represent changing
 state, where you put the boundaries, and how you observe what happened.
 
-[Stickshaker](../README.md) is a browser-agent runtime I built to take that position
-seriously. Here are five places where the common abstraction is wrong, and what
-the numbers looked like when I fixed each one. Every figure below is reproducible
-from the repo — see [`BENCHMARKS.md`](./BENCHMARKS.md).
+[Stickshaker](../README.md) is a browser-agent runtime I built to take that
+position seriously — named for the stall-warning device that shakes an
+aircraft's control column at the edge of a stall, a protection the airframe
+enforces no matter what the pilot believes. Here are five places where the
+common abstraction is wrong, and what the numbers looked like when I fixed
+each one. Every figure below is reproducible from the repo — see
+[`BENCHMARKS.md`](./BENCHMARKS.md).
 
 ## 1. A page is a delta stream, not a document you re-read
 

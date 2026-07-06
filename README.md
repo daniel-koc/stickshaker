@@ -60,7 +60,7 @@ those is a systems mistake, and each has a systems fix here:
 
 - **Pages are delta streams, not documents.** Stable element refs +
   keyframe/delta observations + history elision keep the per-call context
-  flat instead of growing with every step — **22.9% fewer input tokens** on a
+  flat instead of growing with every step — **26.4% fewer input tokens** on a
   sample task, and the gap widens with task length.
 - **The model is not a security boundary.** Every action passes a declarative
   policy engine *before* it runs, enforcement lands on where the browser
@@ -481,8 +481,9 @@ it already took, and continues (recording a fresh linked trace).
 
 Every browser-affecting action is checked against a declarative YAML policy
 **before it runs**, in ordinary code the model cannot influence. A prompt
-injection can fool the model into *proposing* a forbidden action, but it cannot
-edit the policy that refuses it. Without `--policy`, everything is allowed. See
+injection can fool the model into *proposing* a forbidden action, but it
+cannot edit the policy that refuses it. Without `--policy`, everything is
+allowed. See
 [`stickshaker.policy.example.yaml`](stickshaker.policy.example.yaml):
 
 ```yaml
@@ -495,53 +496,47 @@ block: []                   # tool names always blocked
 budgets: { maxSteps: 30, maxCostUsd: 1.00 }
 ```
 
-- **Blocked** actions are refused with a reason the model sees; it must choose
-  a compliant alternative (or fail). Repeated blocked attempts abort the run.
+- **Blocked** actions are refused with a reason the model sees; it must
+  choose a compliant alternative (or fail). Repeated blocked attempts abort
+  the run.
 - **Approval** decisions invoke the `--approve` gate: `prompt` (the default)
   asks the operator on the terminal, `deny` refuses, `auto` allows.
-- **Enforcement is on destinations, not tool names**: a click, form submit, or
-  popup that *lands* on a denied origin is caught after the fact and reversed —
-  a policy that only inspects the `navigate` tool has a side door.
-- **Provenance labeling**: page text is wrapped as explicitly untrusted
-  content, so an instruction hidden in a page reads to the model as data, not a
-  command. This is the model-facing half; the policy engine is the enforcing
-  half.
-- **Embedded frames**: the domain/origin rules extend into embedded documents —
-  an iframe on a disallowed origin is omitted from snapshots entirely (its text
-  never reaches the model, its page-provided tools are neither offered nor
-  callable), with a visible note marking the omission. The starting URL is
-  enforced too, pre-flight and post-landing, so a redirect can't make the first
-  page a policy-free read.
-
-```bash
-stickshaker run "Read the docs and summarize" --url https://example.com --policy stickshaker.policy.example.yaml --approve prompt
-```
+- **Enforcement is on destinations, not tool names**: a click, form submit,
+  or popup that *lands* on a denied origin is caught after the fact and
+  reversed — a policy that only inspects the `navigate` tool has a side door.
+- **Provenance labeling**: page text, titles, element names, and page-provided
+  tool metadata are wrapped or labeled as explicitly untrusted content, so an
+  instruction hidden in a page reads to the model as data, not a command.
+  This is the model-facing half; the policy engine is the enforcing half.
+- **Embedded frames**: the domain/origin rules extend into embedded
+  documents — an iframe on a disallowed origin is omitted from snapshots
+  entirely (its text never reaches the model, its page-provided tools are
+  neither offered nor callable), with a visible note marking the omission.
+  The starting URL is enforced too, pre-flight and post-landing, so a
+  redirect can't make the first page a policy-free read.
 
 ## Model routing (local-first)
 
 `--router` picks where each step's decision is made:
 
 | Mode | Behavior |
-|---|---|
+|------|----------|
 | `cloud` (default) | Every step uses Claude. |
 | `hybrid` | Local-first: the local model proposes the action; if it produces a usable tool call it's used (free), otherwise the step escalates to Claude. A failed local action also escalates the retry. |
 | `local` | Local-only, but still escalates to Claude when the local model can't produce a valid action; fails fast if Ollama is unreachable. |
 
-```bash
-# needs Ollama running with a tool-capable model pulled (e.g. `ollama pull llama3.2`)
-stickshaker run "…task…" --url https://example.com --router hybrid --local-model llama3.2
-```
+The run summary prints the split (`routing: hybrid — N local / M cloud
+steps`); **cost accrues only on cloud steps**, so hybrid is measurably
+cheaper than cloud-only on tasks the local model can partly handle. If
+Ollama isn't running, `hybrid` transparently falls back to all-cloud (with a
+warning) — nothing breaks. Local calls go through Ollama's OpenAI-compatible
+endpoint; Stickshaker's Anthropic tools and conversation are converted on
+the fly.
 
-The run summary prints the split (`routing: hybrid — N local / M cloud steps`);
-**cost accrues only on cloud steps**, so hybrid is measurably cheaper than
-cloud-only on tasks the local model can partly handle. If Ollama isn't running,
-`hybrid` transparently falls back to all-cloud (with a warning) — nothing
-breaks. Local calls go through Ollama's OpenAI-compatible endpoint;
-Stickshaker's Anthropic tools and conversation are converted on the fly.
-
-**Page memory:** the MCP `recall` tool embeds visited-page text and answers by
-vector similarity — Ollama embeddings (`nomic-embed-text`) when available, else
-a dependency-free local hashing embedder, over an in-process cosine index.
+**Page memory:** the MCP `recall` tool embeds visited-page text and answers
+by vector similarity — Ollama embeddings (`nomic-embed-text`) when
+available, else a dependency-free local hashing embedder, over an in-process
+cosine index.
 
 ## WebMCP-hybrid actuation
 
@@ -572,7 +567,7 @@ Every claim reproduces with one command — see
 
 | Claim | Measured |
 |-------|----------|
-| Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
+| Incremental diffs vs. full re-send | **26.4% fewer input tokens**, 24.7% lower cost on a 5-step form task, same outcome |
 | Cache-aware history elision | **~66% lower cost** on a single multi-step run; suite p95 step latency 7315 → 1800 ms |
 | Eval suite (Sonnet, 3 trials each) | **36/36 task-trials, 27/27 injections blocked — unanimous** |
 | Weak-model row (Haiku) | **27/27 injections blocked — unanimous** |
@@ -595,7 +590,7 @@ place):
 ## Layout
 
 | File | Role |
-|---|---|
+|------|------|
 | `src/cli.ts` | Command-line entry (`run`, `mcp`, `eval`, `resume`, `view`, `bench`, `snapshot`) |
 | `src/agent.ts` | The agent loop: routing, keyframe/delta decisions, history elision, guardrails, failure recovery, recording |
 | `src/browser.ts` | Playwright wrapper: launch, stable-ref snapshot, actions |

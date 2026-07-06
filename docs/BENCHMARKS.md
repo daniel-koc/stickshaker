@@ -25,11 +25,11 @@ submit the form, and report the confirmation — three same-page actions followe
 by a navigation. Model: `claude-sonnet-5`.
 
 ```
-mode   steps   input-tok   output-tok      cost  status
-full      5       15882         337   $0.0527  done
-diff      5       12242         380   $0.0424  done
+mode   steps  deltas   input-tok   output-tok      cost  status
+full      5       0       19512         405   $0.0646  done
+diff      5       3       14357         372   $0.0487  done
 
-diff vs full: 22.9% fewer input tokens, 19.5% lower cost.
+diff vs full: 26.4% fewer input tokens, 24.7% lower cost.
 ```
 
 Both modes produced the correct confirmation message in the same number of steps.
@@ -46,8 +46,8 @@ pnpm stickshaker bench \
 ### Reading the result
 
 The per-observation shrink is larger than the run-level number: on same-page
-diff steps the observation was ~410–430 characters versus ~1120–1130 for the
-full snapshot — about **63% smaller**. The run-level figure is lower (22.9%)
+diff steps the observation was ~465–485 characters versus ~1435–1450 for the
+full snapshot — about **67% smaller**. The run-level figure is lower (26.4%)
 because system prompt, tool schemas, the task message, and the assistant turns
 are fixed overhead, and one turn (the post-submit page) is a keyframe.
 

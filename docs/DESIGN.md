@@ -28,7 +28,7 @@ Stickshaker gives every interactive element a stable id that rides on the DOM no
 sends a full **keyframe** only on navigation and every N steps, and sends **deltas**
 in between — added, changed, and removed elements — while eliding stale observations
 from history so context stays flat. On a multi-step form task this cut input tokens
-**22.9%** at the identical outcome, and the gap widens with task length. The lesson
+**26.4%** at the identical outcome, and the gap widens with task length. The lesson
 isn't "compress the prompt"; it's "stop modeling a stream as a series of documents."
 
 ## 2. Planning and actuation are different jobs — let them run on different models

@@ -39,7 +39,7 @@ Cursor, …) a policy-guarded browser via the
 
 *One task, three steps: Hacker News → the Ask HN section → the top post's
 comments, then report the title and comment count — every step captured to a
-replayable trace, for $0.05.*
+replayable trace, for $0.06.*
 
 The flight recorder is the signature.
 **[`docs/demo-report.html`](docs/demo-report.html)** is the real report from

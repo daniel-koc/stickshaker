@@ -19,10 +19,10 @@ Cursor, …) a policy-guarded browser via the
 > **iframes** (same- and cross-origin) and **open shadow roots**, so the agent
 > can act on elements — and call WebMCP tools — inside embedded frames and web
 > components. On the eval suite Claude Sonnet scores **12/12 tasks and blocks
-> 8/8 injection attacks — unanimously across 3 trials** (seven planted in
+> 9/9 injection attacks — unanimously across 3 trials** (eight planted in
 > page-controlled content the model reads, plus one action-based attack the
 > policy layer contains); a materially smaller model (Haiku) also blocks all
-> eight. See [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale is
+> nine. See [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale is
 > written up in [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems
 > problem."*
 
@@ -82,7 +82,7 @@ The full argument, with the numbers behind each claim, is in
 |---------|--------------|
 | `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); prompt caching on by default (`--no-cache` to disable); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
-| `stickshaker eval [--model …] [--trials N] [--only …]` | Run the self-hosted fixture suite (12 tasks + 8 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
+| `stickshaker eval [--model …] [--trials N] [--only …]` | Run the self-hosted fixture suite (12 tasks + 9 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
 | `stickshaker resume <run-dir>` | Continue an interrupted run from its trace. |
@@ -400,12 +400,12 @@ pnpm stickshaker run "Fill the form with 'hello' and submit" \
 pnpm stickshaker view .stickshaker/traces/<run-dir>
 pnpm stickshaker resume .stickshaker/traces/<run-dir>
 
-# The eval suite: 12 tasks + 8 injection attacks, 3 trials each
+# The eval suite: 12 tasks + 9 injection attacks, 3 trials each
 pnpm stickshaker eval --model claude-sonnet-5 --trials 3
 
 # The weak-model injection row
 pnpm stickshaker eval --model claude-haiku-4-5 --trials 3 \
-  --only inject-hidden,inject-comment,inject-webmcp,inject-iframe,inject-shadow,inject-toolresult,inject-title,inject-navigate
+  --only inject-hidden,inject-comment,inject-webmcp,inject-iframe,inject-shadow,inject-toolresult,inject-title,inject-element,inject-navigate
 
 # Diff-vs-full token benchmark on any task
 pnpm stickshaker bench "Fill the first text field with 'Stickshaker', choose 'Two' in the dropdown select menu, type 'hello' into the 'Type to search' field, then click Submit and report the confirmation message shown." \
@@ -569,8 +569,8 @@ Every claim reproduces with one command — see
 |-------|----------|
 | Incremental diffs vs. full re-send | **22.9% fewer input tokens**, 19.5% lower cost on a 5-step form task, same outcome |
 | Cache-aware history elision | **~66% lower cost** on a single multi-step run; suite p95 step latency 7315 → 1800 ms |
-| Eval suite (Sonnet, 3 trials each) | **36/36 task-trials, 24/24 injections blocked — unanimous** |
-| Weak-model row (Haiku) | **24/24 injections blocked — unanimous** |
+| Eval suite (Sonnet, 3 trials each) | **36/36 task-trials, 27/27 injections blocked — unanimous** |
+| Weak-model row (Haiku) | **27/27 injections blocked — unanimous** |
 | Hybrid routing (4-task slice) | **~55% cheaper** than cloud-only, at 3/4 vs 4/4 — the cost/accuracy dial |
 
 ---
@@ -628,19 +628,19 @@ pnpm build           # compile to dist/
 pnpm demo            # regenerate the demo artifacts (live site + API key)
 ```
 
-`pnpm test` runs 170 tests through Node's built-in runner (no extra test
+`pnpm test` runs 173 tests through Node's built-in runner (no extra test
 framework) — **no API key needed and nothing talks to the cloud**. Pure units
 cover the policy engine, injection graders, snapshot diffing, the
 untrusted-text fence, vector memory, and cost accounting. Integration suites
 drive real Chromium: browser-layer regressions (jump-menu navigation races,
 popup draining, password redaction, WebMCP registration), the MCP server over
-in-memory transports (destination enforcement, combined popup+main violations,
-recall gating, handler serialization, trace confinement), and the full agent
-loop driven by a **scripted fake-Ollama backend** — predetermined tool calls
-through the real `runAgent`, so guardrail blocks, pull-backs, approval gating,
-and resume semantics are all asserted against the flight-recorder trace at zero
-model cost. The LLM-dependent behavior is measured separately by `stickshaker
-eval`.
+in-memory transports (destination enforcement, combined popup+main
+violations, recall gating, handler serialization, trace confinement), and the
+full agent loop driven by a **scripted fake-Ollama backend** — predetermined
+tool calls through the real `runAgent`, so guardrail blocks, pull-backs,
+approval gating, and resume semantics are all asserted against the
+flight-recorder trace at zero model cost. The LLM-dependent behavior is
+measured separately by `stickshaker eval`.
 
 ---
 
@@ -650,7 +650,7 @@ eval`.
   *open* shadow root; `attachShadow({ mode: "closed" })` leaves no JS handle
   and Playwright locators can't pierce it. Rare in practice, documented here.
 - **Injection defense is layered, and honestly scoped.** Capable models
-  refuse the planted instructions outright (that's the measured 8/8); the
+  refuse the planted instructions outright (that's the measured 9/9); the
   policy layer is what contains a model that *obeys*, proven by the
   action-injection fixture and deterministic containment tests. Untested
   patterns remain (e.g. screenshot/vision-based, multi-step exfiltration).

@@ -136,11 +136,12 @@ failures escalated the retry to Claude (confidence-based escalation working
 as designed), and the escalated steps fixed the text field and the dropdown —
 but recovery is exactly where the extra cloud tokens went. This is the
 cost-vs-accuracy dial the routing is meant to expose: when hybrid wins, it
-looks like the four-task slice further down (~35% cheaper at 3/4 correct);
-when the local model is below the task's floor, cloud-only is both cheaper
-and correct. Quantifying that boundary properly — a success-rate curve across
-models and tasks, and smarter escalation (e.g. sending higher-stakes actions
-to Claude by default) — is eval-harness territory (below).
+looks like the four-task slice further down (35–63% cheaper, 3/4–4/4 across
+three runs); when the local model is below the task's floor, cloud-only is
+both cheaper and correct. Quantifying that boundary properly — a
+success-rate curve across models and tasks, and smarter escalation (e.g.
+sending higher-stakes actions to Claude by default) — is eval-harness
+territory (below).
 
 ### Caveats
 
@@ -280,9 +281,12 @@ cloud-only, both with `--no-cache`:
 Hybrid cost ~35% less, but the local model failed the `login` task — a cheap
 run to a wrong outcome, and cheap steps are worthless when they're wrong. A
 second uncached run reproduced all of it within half a percent (~35% cheaper,
-3/4, `login` failing again), so the slice is stable run-to-run. This is the
-tradeoff the harness is built to quantify: local steps save money at some
-risk to precision. Smarter escalation (route higher-stakes
+3/4, `login` failing again) — and then a third landed **4/4 at ~63% cheaper**
+($0.0328, 9,406 cloud tokens), the local model's best showing on this slice.
+Treat the table as one draw from a wide spread: a 3B model's competence sits
+right at these tasks' floor, and which side of it a run lands on varies.
+This is the tradeoff the harness is built to quantify: local steps save
+money at some risk to precision. Smarter escalation (route higher-stakes
 actions to Claude by default) is the obvious next lever.
 
 ### Caveats (honest scope)

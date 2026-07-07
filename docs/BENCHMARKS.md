@@ -101,7 +101,8 @@ model first, escalate to Claude when it can't produce a usable action). Cost
 accrues only on cloud steps, and both runs use `--no-cache` — like `bench` —
 so the comparison stays raw.
 
-**Setup.** Same form-fill task as the diff benchmark above. Cloud model
+**Setup.** The same Selenium form as the diff benchmark above, with a
+shorter task (first text field + dropdown + submit). Cloud model
 `claude-sonnet-5`; local model `llama3.2` (3B) via Ollama, CPU.
 
 ```

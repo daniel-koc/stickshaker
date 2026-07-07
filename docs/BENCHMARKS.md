@@ -136,7 +136,7 @@ failures escalated the retry to Claude (confidence-based escalation working
 as designed), and the escalated steps fixed the text field and the dropdown —
 but recovery is exactly where the extra cloud tokens went. This is the
 cost-vs-accuracy dial the routing is meant to expose: when hybrid wins, it
-looks like the four-task slice further down (~55% cheaper at 3/4 correct);
+looks like the four-task slice further down (~35% cheaper at 3/4 correct);
 when the local model is below the task's floor, cloud-only is both cheaper
 and correct. Quantifying that boundary properly — a success-rate curve across
 models and tasks, and smarter escalation (e.g. sending higher-stakes actions
@@ -268,19 +268,20 @@ honest next step.
 
 ### Cost vs. accuracy — hybrid routing on the same fixtures
 
-Running four of the tasks under `--router hybrid` (local llama3.2 first, escalate
-to Claude) against cloud-only:
+Running four of the tasks (`extract`, `form`, `login`, `select`) under
+`--router hybrid` (local llama3.2 first, escalate to Claude) against
+cloud-only, both with `--no-cache`:
 
 | Config | success | cost | cloud tokens |
 |---|---|---|---|
-| cloud (Sonnet) | 4/4 | $0.0653 | 24,753 |
-| hybrid (llama3.2 → Sonnet) | 3/4 | $0.0292 | 8,590 |
+| cloud (Sonnet) | 4/4 | $0.0879 | 25,676 |
+| hybrid (llama3.2 → Sonnet) | 3/4 | $0.0575 | 16,922 |
 
-Hybrid cost ~55% less, but the local model failed the `form` task — it handled
-the whole thing on-device (0 cloud tokens) and submitted the wrong value. This is
-the tradeoff the harness is built to quantify: cheap local steps at some risk to
-precision. Smarter escalation (route higher-stakes actions to Claude by default)
-is the obvious next lever.
+Hybrid cost ~35% less, but the local model failed the `login` task — a cheap
+three-step run to a wrong outcome, and cheap steps are worthless when they're
+wrong. This is the tradeoff the harness is built to quantify: local steps
+save money at some risk to precision. Smarter escalation (route higher-stakes
+actions to Claude by default) is the obvious next lever.
 
 ### Caveats (honest scope)
 

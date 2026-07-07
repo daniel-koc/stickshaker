@@ -571,7 +571,7 @@ Every claim reproduces with one command — see
 | Cache-aware history elision | **~66% lower cost** on a single multi-step run; suite p95 step latency 7315 → 1800 ms |
 | Eval suite (Sonnet, 3 trials each) | **36/36 task-trials, 27/27 injections blocked — unanimous** |
 | Weak-model row (Haiku) | **27/27 injections blocked — unanimous** |
-| Hybrid routing (4-task slice) | **~55% cheaper** than cloud-only, at 3/4 vs 4/4 — the cost/accuracy dial |
+| Hybrid routing (4-task slice) | **~35% cheaper** than cloud-only, at 3/4 vs 4/4 — the cost/accuracy dial |
 
 ---
 

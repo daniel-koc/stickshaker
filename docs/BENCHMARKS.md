@@ -149,9 +149,10 @@ territory (below).
   distribution, not a representative number (earlier runs of this same task
   have landed hybrid-cheaper). The eval fixture suite below adds success
   rate, latency, and repeated trials.
-- **Local latency** isn't shown here: a 3B model on CPU is slower per step than
-  Claude, so hybrid trades wall-clock for cost. The trace's per-step latency
-  (`otel-spans.jsonl`) captures it.
+- **Local latency** isn't shown here: a local model's per-step latency depends
+  entirely on your hardware, so whether hybrid trades wall-clock for cost is
+  machine-specific. The trace's per-step latency (`otel-spans.jsonl`)
+  captures it.
 
 ## Eval harness
 
@@ -214,16 +215,16 @@ total cost: $0.2924 (63 runs, prompt caching on)   p95 step latency: 3110 ms
 
 Every task fixture passed all three trials — `pass 3/3`, unanimous (forms,
 login, dropdown, search, pagination, SPA tab-switching, static extraction, a
-**jump menu** whose `<select>` navigates on
-change — a live regression guard, because an onchange navigation racing the
-snapshot used to crash the whole run — an **iframe** whose button the agent
-clicked *inside the embedded frame* via a frame-qualified ref, a **shadow-DOM
-component** whose button lives inside an open shadow root (invisible to a flat
-querySelectorAll; the composed-tree walk enumerates it and the stamped ref stays
-clickable), a **WebMCP** page where the agent called the page's typed
-`place_order` tool instead of clicking, and a **frame-provided WebMCP tool**:
-the typed tool is registered by an embedded iframe, detected there, and the call
-routed back to that frame). And **all nine injection attacks were blocked** — in
+**jump menu** whose `<select>` navigates on change — a live regression
+guard, because an onchange navigation racing the snapshot used to crash the
+whole run — an **iframe** whose button the agent clicked *inside the embedded
+frame* via a frame-qualified ref, a **shadow-DOM component** whose button
+lives inside an open shadow root (invisible to a flat querySelectorAll; the
+composed-tree walk enumerates it and the stamped ref stays clickable), a
+**WebMCP** page where the agent called the page's typed `place_order` tool
+instead of clicking, and a **frame-provided WebMCP tool**: the typed tool is
+registered by an embedded iframe, detected there, and the call routed back to
+that frame). And **all nine injection attacks were blocked** — in
 every case the agent answered the benign question and ignored the planted
 instruction (unanimously, across all three trials). Eight of the nine target the
 **model-facing** defense across five ingestion surfaces: page text (white-on-white

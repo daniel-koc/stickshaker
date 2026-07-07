@@ -90,8 +90,10 @@ difference). Averaging over repeated trials is what the eval harness below adds.
 
 ## Hybrid routing vs. cloud-only
 
-**Claim:** running cheap steps on a local model and escalating only the hard ones
-to Claude completes the same task for materially less cloud cost.
+**Claim:** routing cheap steps to a local model and escalating only the hard
+ones to Claude *can* complete the same task for materially less cloud cost —
+and the dial can also point the wrong way. The runtime's job is to expose
+which, not to assume.
 
 **How it's measured.** The identical task is run twice through the same agent:
 once `--router cloud` (every step on Claude) and once `--router hybrid` (local
@@ -104,13 +106,17 @@ so the comparison stays raw.
 
 ```
 router   steps   local/cloud   cloud-input-tok      cost   status
-cloud      4       0 / 4            10169         $0.0352   done
-hybrid     4       3 / 1             2367         $0.0112   done
+cloud      4       0 / 4            10962         $0.0375   done
+hybrid    12       8 / 4            11991         $0.0420   done
 ```
 
-Hybrid ran 3 of 4 steps locally (free) and escalated only the final answer to
-Claude — **68% lower cost, 77% fewer cloud input tokens**, same step count, same
-"Received!" confirmation.
+On this run the dial pointed the wrong way. Hybrid ran 8 of 12 steps locally
+(free) — and still billed **12% more** cloud than the clean 4-step cloud-only
+run, because a local model's mistakes are not free even when its tokens are:
+every failed or misdirected action forces a recovery snapshot, and the hard
+steps escalate to Claude anyway. Worse, the cloud-only run reported the
+confirmation ("Form submitted - Received!") while the hybrid run ended back
+on the form without ever reporting one.
 
 **Reproduce:**
 
@@ -120,24 +126,28 @@ pnpm stickshaker run "Type 'Stickshaker' into the first text field, choose 'Two'
   --router hybrid --local-model llama3.2 --model claude-sonnet-5 --no-cache
 ```
 
-### The accuracy tradeoff (honest)
+### What the local model actually did (honest)
 
-The local model is cheaper but less precise: on this run llama3.2 typed into
-element `[1]` (the password field) where the task said the *first* text field
-(`[0]`). The Selenium form accepts any input and still showed "Received!", so the
-task "completed" — but the cloud-only run picked `[0]` correctly. This is exactly
-the cost-vs-accuracy tradeoff the routing is meant to expose: hybrid saves money
-on easy steps at some risk on precision. Quantifying that risk properly — a
-success-rate curve across models and tasks, and smarter escalation (e.g. sending
-higher-stakes actions to Claude by default) — is eval-harness territory
-(below). Confidence-based escalation already helps: a local action that
-*fails* escalates the retry.
+llama3.2 (3B) typed "Stickshaker" into the wrong element, clicked away from
+the form twice, passed a wrong argument key to `type` (so the literal string
+"undefined" got typed into a search box), and finally called `done` with a
+malformed argument — its answer never made it into the result. Two of its
+failures escalated the retry to Claude (confidence-based escalation working
+as designed), and the escalated steps fixed the text field and the dropdown —
+but recovery is exactly where the extra cloud tokens went. This is the
+cost-vs-accuracy dial the routing is meant to expose: when hybrid wins, it
+looks like the four-task slice further down (~55% cheaper at 3/4 correct);
+when the local model is below the task's floor, cloud-only is both cheaper
+and correct. Quantifying that boundary properly — a success-rate curve across
+models and tasks, and smarter escalation (e.g. sending higher-stakes actions
+to Claude by default) — is eval-harness territory (below).
 
 ### Caveats
 
-- **One task, one local model, single run** — establishes the mechanism and a
-  representative number, not a distribution. The eval fixture suite below adds
-  success rate, latency, and repeated trials.
+- **One task, one local model, single run** — one draw from a noisy
+  distribution, not a representative number (earlier runs of this same task
+  have landed hybrid-cheaper). The eval fixture suite below adds success
+  rate, latency, and repeated trials.
 - **Local latency** isn't shown here: a 3B model on CPU is slower per step than
   Claude, so hybrid trades wall-clock for cost. The trace's per-step latency
   (`otel-spans.jsonl`) captures it.

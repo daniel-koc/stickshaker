@@ -39,7 +39,7 @@ same call. Stickshaker routes each step: a small local model (via Ollama) propos
 the action, and only the steps it can't handle — or the ones that fail — escalate
 to Claude. Cost accrues only on cloud steps.
 
-On a four-task eval slice, hybrid routing ran **35–63% less** than cloud-only
+On a four-task eval slice, hybrid routing cost **35–63% less** than cloud-only
 across three runs — and on two of them scored 3/4 (the 3B model failed the
 login task outright), which is the honest half of the story: this is a
 cost-vs-accuracy dial, not a free lunch, and the runtime's job is to expose

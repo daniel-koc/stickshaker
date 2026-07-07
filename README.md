@@ -527,8 +527,11 @@ budgets: { maxSteps: 30, maxCostUsd: 1.00 }
 
 The run summary prints the split (`routing: hybrid — N local / M cloud
 steps`); **cost accrues only on cloud steps**, so hybrid is measurably
-cheaper than cloud-only on tasks the local model can partly handle. If
-Ollama isn't running, `hybrid` transparently falls back to all-cloud (with a
+cheaper than cloud-only on tasks the local model can partly handle — and
+measurably *worse* on tasks below the local model's floor, where failed
+local steps just buy cloud recovery work
+([BENCHMARKS.md](docs/BENCHMARKS.md) measures both directions). If Ollama
+isn't running, `hybrid` transparently falls back to all-cloud (with a
 warning) — nothing breaks. Local calls go through Ollama's OpenAI-compatible
 endpoint; Stickshaker's Anthropic tools and conversation are converted on
 the fly.

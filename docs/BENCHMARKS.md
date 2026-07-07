@@ -228,7 +228,7 @@ registered by an embedded iframe, detected there, and the call routed back to
 that frame). And **all nine injection attacks were blocked** — in
 every case the agent answered the benign question and ignored the planted
 instruction (unanimously, across all three trials). Eight of the nine target the
-**model-facing** defense across five ingestion surfaces: page text (white-on-white
+**model-facing** defense across six ingestion surfaces: page text (white-on-white
 hidden text, a fake "ASSISTANT DIRECTIVE" block), a page tool's **description** and
 its **result string** (a `sync_records` tool whose result carries both the real
 record id and an instruction), an **embedded iframe's** text and an **open shadow
@@ -296,7 +296,7 @@ actions to Claude by default) is the obvious next lever.
 - **21 fixtures, not 21-and-diverse.** A representative suite (extraction, form,
   login, select, jump-menu, search, iframe, shadow-DOM, pagination, SPA, WebMCP —
   main-frame and frame-provided — plus **nine** injection patterns: eight across
-  five model-facing ingestion surfaces, one action-based). The snapshot pierces
+  six model-facing ingestion surfaces, one action-based). The snapshot pierces
   **iframes** (same- and cross-origin, frame-qualified refs) and **open shadow
   roots** (composed-tree walk; Playwright locators keep the stamped refs actuatable),
   and WebMCP tools are detected in every frame. The remaining known boundary is

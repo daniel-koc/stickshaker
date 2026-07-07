@@ -278,9 +278,11 @@ cloud-only, both with `--no-cache`:
 | hybrid (llama3.2 → Sonnet) | 3/4 | $0.0575 | 16,922 |
 
 Hybrid cost ~35% less, but the local model failed the `login` task — a cheap
-three-step run to a wrong outcome, and cheap steps are worthless when they're
-wrong. This is the tradeoff the harness is built to quantify: local steps
-save money at some risk to precision. Smarter escalation (route higher-stakes
+run to a wrong outcome, and cheap steps are worthless when they're wrong. A
+second uncached run reproduced all of it within half a percent (~35% cheaper,
+3/4, `login` failing again), so the slice is stable run-to-run. This is the
+tradeoff the harness is built to quantify: local steps save money at some
+risk to precision. Smarter escalation (route higher-stakes
 actions to Claude by default) is the obvious next lever.
 
 ### Caveats (honest scope)

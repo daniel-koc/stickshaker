@@ -4,6 +4,10 @@
   "description": "A systems-grade browser-agent runtime.",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daniel-koc/stickshaker.git"
+  },
   "packageManager": "pnpm@11.9.0",
   "engines": {
     "node": ">=20.6"
@@ -11,10 +15,15 @@
   "bin": {
     "stickshaker": "dist/cli.js"
   },
+  "files": [
+    "dist",
+    "stickshaker.policy.example.yaml"
+  ],
   "scripts": {
     "stickshaker": "tsx src/cli.ts",
     "demo": "tsx scripts/generate-demo.ts",
     "build": "tsc",
+    "prepublishOnly": "pnpm build",
     "typecheck": "tsc --noEmit -p tsconfig.tests.json",
     "test": "tsx --test tests/guardrails.test.ts tests/graders.test.ts tests/observe.test.ts tests/memory.test.ts tests/llm-ollama.test.ts tests/router.test.ts tests/view.test.ts tests/browser.test.ts tests/mcp.test.ts tests/agent.test.ts"
   },

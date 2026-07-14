@@ -1,5 +1,7 @@
 # Stickshaker
 
+[![CI](https://github.com/daniel-koc/stickshaker/actions/workflows/ci.yml/badge.svg)](https://github.com/daniel-koc/stickshaker/actions/workflows/ci.yml)
+
 **A systems-grade browser-agent runtime — an LLM drives a real Chromium
 browser, cheaply, observably, and behind guardrails it can't talk its way
 past.**

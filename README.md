@@ -125,7 +125,7 @@ server's working directory — see [Quick Start](#3-the-launch-command)),
 
 ### 1. Prerequisites
 
-- **Node.js ≥ 20.6** and **[pnpm](https://pnpm.io)** (`corepack enable`)
+- **Node.js ≥ 20.12** and **[pnpm](https://pnpm.io)** (`corepack enable`)
 - An **Anthropic API key** for agent runs (create one in the
   [Anthropic Console](https://console.anthropic.com)) — `snapshot`, `view`,
   and the test suite work without one

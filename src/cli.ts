@@ -14,7 +14,7 @@ import { runEval, summarize, aggregateTrials, TASKS } from "./eval.js";
 import type { RouterMode } from "./router.js";
 import type { RunMode } from "./types.js";
 
-// Load a local .env if present (Node >= 20.6). No dependency needed.
+// Load a local .env if present (Node >= 20.12). No dependency needed.
 try {
   (process as unknown as { loadEnvFile?: () => void }).loadEnvFile?.();
 } catch {

@@ -10,7 +10,7 @@
   },
   "packageManager": "pnpm@11.9.0",
   "engines": {
-    "node": ">=20.6"
+    "node": ">=20.12"
   },
   "bin": {
     "stickshaker": "dist/cli.js"

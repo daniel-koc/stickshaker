@@ -13,6 +13,7 @@ import { chromium } from "playwright";
 import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent } from "../src/agent.js";
+import { parseTrace } from "../src/recorder.js";
 import { generateReport } from "../src/view.js";
 
 (process as unknown as { loadEnvFile?: () => void }).loadEnvFile?.();
@@ -81,8 +82,7 @@ async function main(): Promise<void> {
   console.error("● wrote docs/demo-report.html");
 
   // 2) Build the hero filmstrip from the run's OWN screenshots + trace captions.
-  const events: TraceEvent[] = readFileSync(join(result.runDir, "trace.jsonl"), "utf8")
-    .split("\n").filter(Boolean).map((l) => JSON.parse(l) as TraceEvent);
+  const events = parseTrace(readFileSync(join(result.runDir, "trace.jsonl"), "utf8")) as unknown as TraceEvent[];
   const actionByStep = new Map<number, TraceEvent>();
   for (const e of events) if (e.type === "action" && typeof e.step === "number") actionByStep.set(e.step, e);
 

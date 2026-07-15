@@ -2,6 +2,19 @@
   "name": "stickshaker",
   "version": "0.1.0",
   "description": "A systems-grade browser-agent runtime.",
+  "keywords": [
+    "browser-agent",
+    "browser-automation",
+    "playwright",
+    "llm",
+    "ai-agent",
+    "mcp",
+    "model-context-protocol",
+    "webmcp",
+    "prompt-injection",
+    "guardrails",
+    "observability"
+  ],
   "type": "module",
   "license": "Apache-2.0",
   "repository": {

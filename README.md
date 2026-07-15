@@ -44,11 +44,13 @@ comments, then report the title and comment count — every step captured to a
 replayable trace, for $0.06.*
 
 The flight recorder is the signature.
-**[`docs/demo-report.html`](docs/demo-report.html)** is the real report from
-that exact run — download and open the single self-contained file
-(screenshots embedded, no server needed) to click through every step: the
+**[Open the live report](https://daniel-koc.github.io/stickshaker/demo-report.html)**
+— the real one from that exact run — to click through every step: the
 screenshot, the agent's reasoning, the exact observation sent to the model,
-and per-step tokens and latency. Regenerate both artifacts with `pnpm demo` —
+and per-step tokens and latency. It's a single self-contained file
+(screenshots embedded, no server needed), so you can also open
+[`docs/demo-report.html`](docs/demo-report.html) straight from the repo,
+offline. Regenerate both artifacts with `pnpm demo` —
 it drives a live site, so the steps drift; the deterministic path is
 `stickshaker eval` against the self-hosted fixtures.
 

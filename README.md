@@ -419,7 +419,7 @@ pnpm stickshaker eval --model claude-haiku-4-5 --trials 3 \
 # Same, on a 3B local model with NO cloud fallback (the no-escalation harness);
 # --trace-dir keeps a per-trial trace so blocked-vs-never-attempted is auditable
 pnpm stickshaker eval --router local --local-model llama3.2 --no-escalate --trials 3 \
-  --trace-dir runs/local-injection \
+  --trace-dir .stickshaker/eval-traces \
   --only inject-hidden,inject-comment,inject-webmcp,inject-iframe,inject-shadow,inject-toolresult,inject-title,inject-element,inject-navigate
 
 # Diff-vs-full token benchmark on any task

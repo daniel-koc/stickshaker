@@ -499,9 +499,13 @@ export class BrowserSession {
 
   async scroll(direction: "up" | "down"): Promise<ActionResult> {
     const dy = direction === "up" ? -800 : 800;
-    await this.page.mouse.wheel(0, dy);
-    await this.page.waitForTimeout(400);
-    return { ok: true, detail: `scrolled ${direction}` };
+    try {
+      await this.page.mouse.wheel(0, dy);
+      await this.page.waitForTimeout(400);
+      return { ok: true, detail: `scrolled ${direction}` };
+    } catch (e) {
+      return { ok: false, detail: `scroll failed: ${errMsg(e)}` };
+    }
   }
 
   async goBack(): Promise<ActionResult> {

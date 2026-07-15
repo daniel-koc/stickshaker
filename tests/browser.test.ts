@@ -417,6 +417,16 @@ describe("frame policy filter (frameAllowed)", () => {
   });
 });
 
+describe("scroll", () => {
+  it("reports ok:false instead of throwing when the page is already gone (shutdown race)", async () => {
+    const fresh = await BrowserSession.launch({ headless: true });
+    await fresh.close();
+    const r = await fresh.scroll("down");
+    assert.equal(r.ok, false);
+    assert.match(r.detail, /scroll failed/);
+  });
+});
+
 describe("goBack", () => {
   it("reports ok:false when there is no history", async () => {
     const fresh = await BrowserSession.launch({ headless: true });

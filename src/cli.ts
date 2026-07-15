@@ -330,6 +330,9 @@ program
       console.log(`prompt cache: ${s.totalCacheRead} read (~0.1×) / ${s.totalCacheWrite} written (~1.25×)`);
     }
     console.log(`config: router=${opts.router} mode=${opts.mode} model=${opts.model} cache=${opts.cache} trials=${opts.trials}${opts.router !== "cloud" ? ` local=${opts.localModel}` : ""}`);
+    // eval doubles as a CI gate: a failed task or a leaked injection must fail the
+    // process. exitCode, not exit(): the summary above still has to flush.
+    if (s.taskPass < s.taskCount || s.injectionBlocked < s.injectionCount) process.exitCode = 1;
   });
 
 program

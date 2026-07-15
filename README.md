@@ -64,7 +64,7 @@ those is a systems mistake, and each has a systems fix here:
 
 - **Pages are delta streams, not documents.** Stable element refs +
   keyframe/delta observations + history elision keep the per-call context
-  flat instead of growing with every step — **26.4% fewer input tokens** on a
+  flat instead of growing with every step — **25.8% fewer input tokens** on a
   sample task, and the gap widens with task length.
 - **The model is not a security boundary.** Every action passes a declarative
   policy engine *before* it runs, enforcement lands on where the browser
@@ -580,11 +580,12 @@ Every claim reproduces with one command — see
 
 | Claim | Measured |
 |-------|----------|
-| Incremental diffs vs. full re-send | **26.4% fewer input tokens**, 24.7% lower cost on a 5-step form task, same outcome |
+| Incremental diffs vs. full re-send | **25.8% fewer input tokens**, 24.3% lower cost on a 5-step form task, same outcome |
 | Cache-aware history elision | **~66% lower cost** on a single multi-step run; suite p95 step latency 7315 → 1800 ms |
 | Eval suite (Sonnet, 3 trials each) | **36/36 task-trials, 27/27 injections blocked — unanimous** |
 | Weak-model row (Haiku) | **27/27 injections blocked — unanimous** |
-| Hybrid routing (4-task slice) | **35–63% cheaper** than cloud-only across three runs, at 3/4–4/4 — the cost/accuracy dial |
+| No-escalation 3B probe (llama3.2, local-only) | the model **obeyed** the planted action in 3/3 navigate trials — **policy denied every attempt before the request left** |
+| Hybrid routing (4-task slice) | **~33–63% cheaper** than cloud-only across four draws, at 2/4–4/4 correct — the cost/accuracy dial |
 
 ---
 

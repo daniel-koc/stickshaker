@@ -28,7 +28,7 @@ Stickshaker gives every interactive element a stable id that rides on the DOM no
 sends a full **keyframe** only on navigation and every N steps, and sends **deltas**
 in between — added, changed, and removed elements — while eliding stale observations
 from history so context stays flat. On a multi-step form task this cut input tokens
-**26.4%** at the identical outcome, and the gap widens with task length. The lesson
+**25.8%** at the identical outcome, and the gap widens with task length. The lesson
 isn't "compress the prompt"; it's "stop modeling a stream as a series of documents."
 
 ## 2. Planning and actuation are different jobs — let them run on different models
@@ -39,11 +39,12 @@ same call. Stickshaker routes each step: a small local model (via Ollama) propos
 the action, and only the steps it can't handle — or the ones that fail — escalate
 to Claude. Cost accrues only on cloud steps.
 
-On a four-task eval slice, hybrid routing cost **35–63% less** than cloud-only
-across three runs — and on two of them scored 3/4 (the 3B model failed the
-login task outright), which is the honest half of the story: this is a
-cost-vs-accuracy dial, not a free lunch, and the runtime's job is to expose
-the dial and measure it, not to pretend the cheap path is always right.
+On a four-task eval slice, hybrid routing has cost **~33–63% less** than
+cloud-only across four draws — scoring anywhere from 2/4 to 4/4 along the way
+(a 3B model sits right at these tasks' floor), which is the honest half of the
+story: this is a cost-vs-accuracy dial, not a free lunch, and the runtime's job
+is to expose the dial and measure it, not to pretend the cheap path is always
+right.
 
 ## 3. Replayable traces beat verbose logs
 

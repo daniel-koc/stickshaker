@@ -14,6 +14,8 @@ export interface RunMeta {
   router?: string;
   localModel?: string;
   ollamaUrl?: string;
+  /** --no-escalate on a local run, recorded so a resume keeps the guarantee. */
+  noEscalate?: boolean;
   policyPath?: string;
   /** sameOriginOnly anchor, recorded so a resume keeps the original scope. */
   taskOrigin?: string;

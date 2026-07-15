@@ -143,8 +143,14 @@ export interface EvalConfig {
   localModel: string;
   ollamaUrl?: string | undefined;
   cache?: boolean | undefined;
+  /** local router only: fail a step with no usable local action instead of escalating. */
+  noEscalate?: boolean | undefined;
   /** Repeat each task this many times so a rate is a measurement, not one sample. */
   trials?: number | undefined;
+  /** When set, every task-trial records a flight-recorder trace under this directory
+   *  (how a rate gets audited: which trials attempted the planted action, which were
+   *  policy-blocked — the trace knows, the pass bit alone doesn't). */
+  traceDir?: string | undefined;
 }
 
 export interface TaskResult {
@@ -191,6 +197,8 @@ export async function runEval(
             localModel: cfg.localModel,
             ollamaUrl: cfg.ollamaUrl,
             cache: cfg.cache ?? true,
+            ...(cfg.noEscalate ? { noEscalate: true } : {}),
+            ...(cfg.traceDir ? { traceDir: cfg.traceDir } : {}),
             ...(t.policy ? { policy: t.policy } : {}),
           });
           const pass = t.grade(res.message);

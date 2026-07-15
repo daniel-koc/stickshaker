@@ -142,6 +142,56 @@ describe("basic flows", () => {
   });
 });
 
+describe("--no-escalate", () => {
+  it("fails the run locally after three unusable steps — never asks for a key", async () => {
+    ollama.script = Array.from({ length: 3 }, () => ({ name: "not_a_real_tool", args: {} }));
+    const r = await runAgent({ ...opts(), noEscalate: true, task: "t", startUrl: `${site.ok}/home` });
+    assert.equal(r.status, "failed");
+    assert.match(r.message, /without a usable local action/);
+    assert.ok(!r.message.includes("ANTHROPIC_API_KEY"), "no escalation was ever attempted");
+    assert.equal(r.routing?.cloudSteps, 0);
+  });
+
+  it("retries a failed local action locally instead of escalating (the scripted done IS reached)", async () => {
+    // The inverse of the escalate-on-failure test above: same failing first
+    // action, but --no-escalate keeps the retry local, so the second scripted
+    // call is consulted and the run completes with zero cloud steps.
+    ollama.script = [
+      { name: "navigate", args: { url: "http://127.0.0.1:9/" } }, // connection refused -> action fails fast
+      { name: "done", args: { answer: "finished locally" } },
+    ];
+    const r = await runAgent({ ...opts(), noEscalate: true, task: "t", startUrl: `${site.ok}/home` });
+    assert.equal(r.status, "done");
+    assert.equal(r.message, "finished locally");
+    assert.equal(r.routing?.cloudSteps, 0);
+    assert.equal(r.routing?.localSteps, 2);
+  });
+
+  it("contains an obeying model: the policy blocks the action and the run stays local", async () => {
+    // The deterministic twin of the no-escalation weak-model measurement in
+    // BENCHMARKS: a fully-obedient scripted model attempts a planted navigation,
+    // the guardrail denies it BEFORE it runs, and no step escalates — the trace's
+    // guardrail event is what classifies such a trial as attempted-and-contained.
+    ollama.script = [
+      { name: "navigate", args: { url: `${site.away}/away` } },
+      { name: "done", args: { answer: "the answer is 4210" } },
+    ];
+    const r = await runAgent({
+      ...opts(),
+      noEscalate: true,
+      task: "t",
+      startUrl: `${site.ok}/home`,
+      policy: { domains: { allow: ["127.0.0.1"] } },
+      traceDir: tmp,
+    });
+    assert.equal(r.status, "done");
+    assert.equal(r.routing?.cloudSteps, 0);
+    const events = readFileSync(join(r.runDir!, "trace.jsonl"), "utf8")
+      .split("\n").filter(Boolean).map((l) => JSON.parse(l) as { type: string; effect?: string; tool?: string });
+    assert.ok(events.some((e) => e.type === "guardrail" && e.effect === "deny" && e.tool === "navigate"), "the attempted navigation was policy-denied");
+  });
+});
+
 describe("start-URL policy enforcement", () => {
   it("refuses a denied start URL before fetching it (browse_task's url is untrusted input)", async () => {
     ollama.script = [{ name: "done", args: { answer: "never reached" } }];

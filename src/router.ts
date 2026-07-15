@@ -52,6 +52,9 @@ export interface Decision {
   escalated?: boolean;
   /** Set when the step cannot proceed at all (e.g. escalation needed but no API key). */
   hardFail?: string | undefined;
+  /** Set when THIS step failed without a decision (--no-escalate and no usable local
+   *  action): the step fails and the run continues, unlike hardFail. */
+  stepFail?: string | undefined;
 }
 
 export interface RouterConfig {
@@ -66,13 +69,17 @@ export interface RouterConfig {
   hasKey: boolean;
   /** Place prompt-cache breakpoints on cloud requests (default runtime behavior). */
   cache: boolean;
+  /** local mode only: never escalate to the cloud — a step with no usable local
+   *  action fails (stepFail) instead. */
+  noEscalate?: boolean;
 }
 
 /**
  * Routes each step to a local model (cheap) or Claude (capable). Hybrid is
  * local-first: it uses the local model's action when it's usable and escalates
  * to Claude otherwise — plus the caller escalates after a failed local action
- * (a low-confidence signal). Cost accrues only on cloud steps.
+ * (a low-confidence signal). Local mode escalates the same two ways, unless
+ * noEscalate pins it local. Cost accrues only on cloud steps.
  */
 export class Router {
   private counter = 0;
@@ -82,13 +89,25 @@ export class Router {
     messages: Anthropic.MessageParam[],
     opts: { tools: Anthropic.Tool[]; forceCloud: boolean; cacheBoundaryIndex?: number },
   ): Promise<Decision> {
-    if (this.cfg.mode === "cloud" || opts.forceCloud) {
+    // --no-escalate pins a local run local. The guarantee is enforced HERE, by
+    // construction: even the caller's escalate-after-failure request (forceCloud)
+    // cannot route a step to the cloud.
+    const pinnedLocal = this.cfg.mode === "local" && this.cfg.noEscalate === true;
+    if (!pinnedLocal && (this.cfg.mode === "cloud" || opts.forceCloud)) {
       return this.cfg.hasKey ? this.cloud(messages, opts.tools, opts.cacheBoundaryIndex) : this.noKeyFail(opts.forceCloud);
     }
 
     const local = await this.tryLocal(messages, opts.tools);
     if (local) return local;
 
+    if (pinnedLocal) {
+      return {
+        source: "local",
+        inputTokens: 0,
+        outputTokens: 0,
+        stepFail: "The local model did not produce a usable action and escalation is disabled (--no-escalate)",
+      };
+    }
     // local produced nothing usable (or Ollama is down) → escalate to Claude,
     // unless there's no key to escalate with (keyless --router local): fail cleanly
     // rather than firing a doomed API call with a placeholder key.

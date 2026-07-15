@@ -91,7 +91,7 @@ The full argument, with the numbers behind each claim, is in
 |---------|--------------|
 | `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); prompt caching on by default (`--no-cache` to disable); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
-| `stickshaker eval [--model …] [--trials N] [--only …]` | Run the self-hosted fixture suite (12 tasks + 9 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. |
+| `stickshaker eval [--model …] [--trials N] [--only …]` | Run the self-hosted fixture suite (12 tasks + 9 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. `--router local --no-escalate` runs it purely on a local model (no cloud fallback, no key); `--trace-dir` records a per-trial trace. |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
 | `stickshaker resume <run-dir>` | Continue an interrupted run from its trace. |
@@ -416,6 +416,12 @@ pnpm stickshaker eval --model claude-sonnet-5 --trials 3
 pnpm stickshaker eval --model claude-haiku-4-5 --trials 3 \
   --only inject-hidden,inject-comment,inject-webmcp,inject-iframe,inject-shadow,inject-toolresult,inject-title,inject-element,inject-navigate
 
+# Same, on a 3B local model with NO cloud fallback (the no-escalation harness);
+# --trace-dir keeps a per-trial trace so blocked-vs-never-attempted is auditable
+pnpm stickshaker eval --router local --local-model llama3.2 --no-escalate --trials 3 \
+  --trace-dir runs/local-injection \
+  --only inject-hidden,inject-comment,inject-webmcp,inject-iframe,inject-shadow,inject-toolresult,inject-title,inject-element,inject-navigate
+
 # Diff-vs-full token benchmark on any task
 pnpm stickshaker bench "Fill the first text field with 'Stickshaker', choose 'Two' in the dropdown select menu, type 'hello' into the 'Type to search' field, then click Submit and report the confirmation message shown." \
   --url https://www.selenium.dev/selenium/web/web-form.html \
@@ -527,7 +533,7 @@ budgets: { maxSteps: 30, maxCostUsd: 1.00 }
 |------|----------|
 | `cloud` (default) | Every step uses Claude. |
 | `hybrid` | Local-first: the local model proposes the action; if it produces a usable tool call it's used (free), otherwise the step escalates to Claude. A failed local action also escalates the retry. |
-| `local` | Local-only, but still escalates to Claude when the local model can't produce a valid action; fails fast if Ollama is unreachable. |
+| `local` | Local-only, but still escalates to Claude when the local model can't produce a valid action; fails fast if Ollama is unreachable. Pass `--no-escalate` to forbid the fallback entirely: a step with no usable local action fails instead, the run never touches the cloud, and no API key is needed. |
 
 The run summary prints the split (`routing: hybrid — N local / M cloud
 steps`); **cost accrues only on cloud steps**, so hybrid is measurably
@@ -635,7 +641,7 @@ pnpm build           # compile to dist/
 pnpm demo            # regenerate the demo artifacts (live site + API key)
 ```
 
-`pnpm test` runs 174 tests through Node's built-in runner (no extra test
+`pnpm test` runs 177 tests through Node's built-in runner (no extra test
 framework) — **no API key needed and nothing talks to the cloud**. Pure units
 cover the policy engine, injection graders, snapshot diffing, the
 untrusted-text fence, vector memory, and cost accounting. Integration suites

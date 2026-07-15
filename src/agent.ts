@@ -57,6 +57,9 @@ export interface AgentOptions {
   ollamaUrl?: string | undefined;
   /** Prompt caching on cloud requests. Default true; disable to measure raw tokens. */
   cache?: boolean | undefined;
+  /** --router local only: never escalate to Claude. A step with no usable local
+   *  action fails the step (and eventually the run) instead of borrowing the cloud. */
+  noEscalate?: boolean | undefined;
   /** Path of the policy file, recorded in the trace so a resume can reload it. */
   policyPath?: string | undefined;
   /**
@@ -123,6 +126,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     router: opts.router ?? "cloud",
     ...(opts.localModel ? { localModel: opts.localModel } : {}),
     ...(opts.ollamaUrl ? { ollamaUrl: opts.ollamaUrl } : {}),
+    ...(opts.noEscalate ? { noEscalate: true } : {}),
     ...(opts.policyPath ? { policyPath: opts.policyPath } : {}),
     ...(taskOrigin ? { taskOrigin } : {}),
     ...(opts.resumedFrom ? { resumedFrom: opts.resumedFrom } : {}),
@@ -147,6 +151,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     maxTokens: 4096,
     hasKey,
     cache: opts.cache ?? true,
+    noEscalate: opts.noEscalate ?? false,
   });
   let cloudSteps = 0;
   let localSteps = 0;
@@ -339,6 +344,22 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
         stepSpan?.end();
         log(`step ${step}: ${decision.hardFail}`);
         return ret("failed", decision.hardFail, step - 1);
+      }
+
+      // A step-level failure with no decision made (--no-escalate: the local model
+      // produced nothing usable). Nothing enters history — the same request is
+      // simply retried — so the model gets another chance, bounded by the same
+      // consecutive-failure cap as failed actions.
+      if (decision.stepFail) {
+        consecutiveFailures++;
+        recorder?.event("recovery", { step, note: `${decision.stepFail} (${consecutiveFailures} in a row)` });
+        stepSpan?.setStatus({ code: SpanStatusCode.ERROR });
+        stepSpan?.end();
+        log(`step ${step}: ${decision.stepFail}`);
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          return ret("failed", `Aborted after ${consecutiveFailures} consecutive steps without a usable local action. ${decision.stepFail}.`, step);
+        }
+        continue;
       }
 
       if (decision.source === "cloud") {

@@ -118,6 +118,7 @@ program
   .option("--router <mode>", "model routing: cloud | local | hybrid", parseRouter, "cloud")
   .option("--local-model <name>", "Ollama model for local/hybrid routing", "llama3.2")
   .option("--ollama-url <url>", "Ollama base URL", "http://localhost:11434")
+  .option("--no-escalate", "local router only: a step with no usable local action fails instead of escalating to Claude")
   .option("--policy <file>", "guardrail policy YAML file")
   .option("--approve <mode>", "how to handle actions needing approval: auto | prompt | deny", parseApproveMode, "prompt")
   .option("--trace-dir <dir>", "directory for run traces", ".stickshaker/traces")
@@ -133,6 +134,7 @@ program
     router: RouterMode;
     localModel: string;
     ollamaUrl: string;
+    escalate: boolean;
     policy?: string;
     approve: ApproveMode;
     traceDir: string;
@@ -141,6 +143,10 @@ program
     headed: boolean;
   }) => {
     if (opts.router !== "local") requireKey();
+    if (!opts.escalate && opts.router !== "local") {
+      console.error("ERROR: --no-escalate only applies to --router local.");
+      process.exit(1);
+    }
     console.error(`▶ task: ${task}   [mode: ${opts.mode}, router: ${opts.router}, model: ${opts.model}${opts.policy ? ", policy: " + opts.policy : ""}]`);
     const result = await runAgent({
       task,
@@ -152,6 +158,7 @@ program
       router: opts.router,
       localModel: opts.localModel,
       ollamaUrl: opts.ollamaUrl,
+      ...(opts.escalate === false ? { noEscalate: true } : {}),
       headless: !opts.headed,
       cache: opts.cache,
       traceDir: opts.trace ? opts.traceDir : undefined,
@@ -289,20 +296,30 @@ program
   .option("--model <model>", "Claude model id", "claude-opus-4-8")
   .option("--local-model <name>", "Ollama model for local/hybrid routing", "llama3.2")
   .option("--ollama-url <url>", "Ollama base URL", "http://localhost:11434")
+  .option("--no-escalate", "local router only: a step with no usable local action fails instead of escalating to Claude")
   .option("--only <ids>", "comma-separated task ids to run (default: all)")
   .option("--trials <n>", "repeat each task N times and report a k/N pass rate", parsePositiveInt, 1)
   .option("--no-cache", "disable prompt caching (measure raw input cost)")
-  .action(async (opts: { router: RouterMode; mode: RunMode; model: string; localModel: string; ollamaUrl: string; only?: string; trials: number; cache: boolean }) => {
+  .option("--trace-dir <dir>", "record a flight-recorder trace per task-trial under this directory")
+  .action(async (opts: { router: RouterMode; mode: RunMode; model: string; localModel: string; ollamaUrl: string; escalate: boolean; only?: string; trials: number; cache: boolean; traceDir?: string }) => {
     if (opts.router !== "local") requireKey();
+    if (!opts.escalate && opts.router !== "local") {
+      console.error("ERROR: --no-escalate only applies to --router local.");
+      process.exit(1);
+    }
     const only = opts.only ? new Set(opts.only.split(",").map((s) => s.trim())) : null;
     const tasks = only ? TASKS.filter((t) => only.has(t.id)) : TASKS;
     if (tasks.length === 0) {
       console.error("no matching task ids");
       process.exit(1);
     }
-    console.error(`▶ eval: ${tasks.length} tasks × ${opts.trials} trial(s)   [router: ${opts.router}, mode: ${opts.mode}, model: ${opts.model}, cache: ${opts.cache}]`);
+    console.error(`▶ eval: ${tasks.length} tasks × ${opts.trials} trial(s)   [router: ${opts.router}${opts.escalate === false ? " (no-escalate)" : ""}, mode: ${opts.mode}, model: ${opts.model}, cache: ${opts.cache}]`);
     const results = await runEval(
-      { router: opts.router, mode: opts.mode, model: opts.model, localModel: opts.localModel, ollamaUrl: opts.ollamaUrl, cache: opts.cache, trials: opts.trials },
+      {
+        router: opts.router, mode: opts.mode, model: opts.model, localModel: opts.localModel, ollamaUrl: opts.ollamaUrl, cache: opts.cache, trials: opts.trials,
+        ...(opts.escalate === false ? { noEscalate: true } : {}),
+        ...(opts.traceDir ? { traceDir: opts.traceDir } : {}),
+      },
       tasks,
       (line) => console.error(line),
     );
@@ -329,7 +346,7 @@ program
     if (s.totalCacheRead || s.totalCacheWrite) {
       console.log(`prompt cache: ${s.totalCacheRead} read (~0.1×) / ${s.totalCacheWrite} written (~1.25×)`);
     }
-    console.log(`config: router=${opts.router} mode=${opts.mode} model=${opts.model} cache=${opts.cache} trials=${opts.trials}${opts.router !== "cloud" ? ` local=${opts.localModel}` : ""}`);
+    console.log(`config: router=${opts.router} mode=${opts.mode} model=${opts.model} cache=${opts.cache} trials=${opts.trials}${opts.router !== "cloud" ? ` local=${opts.localModel}` : ""}${opts.escalate === false ? " no-escalate" : ""}`);
     // eval doubles as a CI gate: a failed task or a leaked injection must fail the
     // process. exitCode, not exit(): the summary above still has to flush.
     if (s.taskPass < s.taskCount || s.injectionBlocked < s.injectionCount) process.exitCode = 1;

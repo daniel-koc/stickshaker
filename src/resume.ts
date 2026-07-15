@@ -48,6 +48,7 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     router?: RouterMode;
     localModel?: string;
     ollamaUrl?: string;
+    noEscalate?: boolean;
     policyPath?: string;
     taskOrigin?: string;
   };
@@ -120,6 +121,7 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     ...(meta.router ? { router: meta.router } : {}),
     ...(meta.localModel ? { localModel: meta.localModel } : {}),
     ...(meta.ollamaUrl ? { ollamaUrl: meta.ollamaUrl } : {}),
+    ...(meta.noEscalate ? { noEscalate: true } : {}),
     ...(policy ? { policy } : {}),
     ...(policyPath ? { policyPath } : {}),
     ...(opts.approve ? { approve: opts.approve } : {}),

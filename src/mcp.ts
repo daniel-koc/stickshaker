@@ -15,7 +15,7 @@ import type { ActionResult, Snapshot } from "./types.js";
 const DEFAULT_OLLAMA_URL = "http://localhost:11434";
 const DEFAULT_EMBED_MODEL = "nomic-embed-text";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 
 function textResult(text: string, isError = false) {
   return { content: [{ type: "text" as const, text }], ...(isError ? { isError: true } : {}) };

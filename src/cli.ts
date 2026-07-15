@@ -104,7 +104,7 @@ const program = new Command();
 program
   .name("stickshaker")
   .description("A systems-grade browser-agent runtime.")
-  .version("0.1.0");
+  .version("0.1.1");
 
 program
   .command("run")

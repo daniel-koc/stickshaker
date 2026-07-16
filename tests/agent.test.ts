@@ -226,12 +226,17 @@ describe("storage state", () => {
     const runJsonRaw = readFileSync(join(r.runDir!, "run.json"), "utf8");
     assert.equal((JSON.parse(runJsonRaw) as { storageState?: string }).storageState, stateFile);
     // ...and no artifact anywhere contains a state-file VALUE: not the trace, not
-    // run.json, not a single byte of what was sent to the model backend.
+    // run.json, not the OTel spans (a separate write path from the recorder), not a
+    // single byte of what was sent to the model backend. Every text file the run
+    // wrote is swept, not just the obvious ones.
+    const otelPath = join(r.runDir!, "otel-spans.jsonl");
     const artifacts: Array<[string, string]> = [
       ["run.json", runJsonRaw],
       ["trace.jsonl", readFileSync(join(r.runDir!, "trace.jsonl"), "utf8")],
+      ["otel-spans.jsonl", existsSync(otelPath) ? readFileSync(otelPath, "utf8") : ""],
       ["model requests", ollama.requests.join("\n")],
     ];
+    assert.ok(existsSync(otelPath), "the run wrote OTel spans (so sweeping them is a real check, not a no-op)");
     for (const [what, raw] of artifacts) {
       assert.ok(!raw.includes(SENTINEL_COOKIE), `cookie value must not appear in ${what}`);
       assert.ok(!raw.includes(SENTINEL_LOCAL), `localStorage value must not appear in ${what}`);

@@ -53,6 +53,13 @@ Pre-1.0, only the latest commit on `main` is supported.
   documented limitation, not an escape.
 - Running without `--policy`. No policy means everything is allowed; that is
   the documented default, not a vulnerability.
+- A client naming an arbitrary server-local path in `storage_state` once the
+  policy has set `allowStorageState: true`. The grant *is* "this client may
+  cause the server to read a local file as a session" — the file's contents
+  never reach the client or the model (a non-state file yields only a
+  shape-validation error, so at most its existence and JSON-validity are
+  observable), but grant `allowStorageState` only to clients you would trust
+  with local file reads. It is off by default for exactly this reason.
 - Bugs in Chromium or Playwright themselves — report those upstream.
 
 ## Hardening guidance

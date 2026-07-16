@@ -408,7 +408,8 @@ pnpm stickshaker run "Read the docs and summarize" --url https://example.com \
   --policy stickshaker.policy.example.yaml --approve prompt
 
 # Authenticated session: capture state once (log in by hand, then close the window),
-# then run logged-in tasks behind an origin allowlist that confines the session
+# then run logged-in tasks behind an origin allowlist that confines the session.
+# auth.json holds live credentials — it is gitignored by default; keep it that way.
 npx playwright codegen --save-storage=auth.json https://example.com
 pnpm stickshaker run "Open the account dashboard and report the plan name" \
   --url https://example.com/dashboard --storage-state auth.json \
@@ -554,6 +555,9 @@ walking a login form. Create the file once by logging in manually:
 ```bash
 npx playwright codegen --save-storage=auth.json https://example.com
 ```
+
+(`auth.json` is gitignored by default so a stray `git add` can't commit it —
+if you save it under a different name, ignore that one too.)
 
 Storage state is **credentials**, and the runtime treats it that way:
 

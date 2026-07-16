@@ -1,6 +1,12 @@
 node_modules/
 dist/
 .env
+# Storage-state / auth files hold live session credentials (see --storage-state);
+# never commit them. Covers the name the docs use and the obvious variants.
+auth.json
+storage-state.json
+storageState.json
+*.storage-state.json
 *.log
 .stickshaker/
 .DS_Store

@@ -273,6 +273,11 @@ export class BrowserSession {
       // can't leak a Chromium process — one zombie per failed launch, which
       // accumulates in the long-lived MCP server.
       await s.browser.close().catch(() => {});
+      // Interpolating Playwright's error is value-safe for a credentials file:
+      // its storageState schema errors name the field and type ("cookies[0].value:
+      // expected string, got number"), never the value (verified) — and a real
+      // (string) credential passes the type check silently, so it never reaches an
+      // error at all. Only the file PATH is added, which the trace already records.
       throw opts.storageState
         ? new Error(`failed to apply storage state from ${opts.storageState}: ${errMsg(e)}`)
         : e;

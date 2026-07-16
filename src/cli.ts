@@ -236,11 +236,13 @@ program
   .option("--embed-model <name>", "Ollama embedding model for recall", "nomic-embed-text")
   .action(async (opts: { policy?: string; storageState?: string; traceDir: string; ollamaUrl: string; embedModel: string }) => {
     const policy = opts.policy ? loadPolicy(opts.policy) : undefined;
-    // The launch flag needs allowStorageState (buildServer enforces that). When it
-    // is granted but nothing confines the origin, the authenticated shared session
-    // can be steered anywhere a tool call decides — warn, matching `run`.
-    if (opts.storageState && policy?.allowStorageState === true && !(policy.domains?.allow?.length || policy.sameOriginOnly)) {
-      console.error("⚠ --storage-state without origin confinement: add a domains allowlist or sameOriginOnly to the policy, or the authenticated session can be steered anywhere a tool call decides.");
+    // Warn on the PERMISSION, not just the launch flag. A policy that allows storage
+    // state without origin confinement leaves every authenticated run unconfined —
+    // both the --storage-state shared session AND a browse_task per-call storage_state
+    // argument (which never touches the launch flag). Flag it once at startup, matching
+    // the intent behind `run`'s warning: make the exposure impossible to miss.
+    if (policy?.allowStorageState === true && !(policy.domains?.allow?.length || policy.sameOriginOnly)) {
+      console.error("⚠ policy allows storage state (authenticated sessions) with no origin confinement: add a domains allowlist or sameOriginOnly, or an authenticated session — via --storage-state or a browse_task storage_state argument — can be steered anywhere the agent decides.");
     }
     await startStdioServer({
       ...(policy ? { policy, policyPath: opts.policy } : {}),

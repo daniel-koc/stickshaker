@@ -82,15 +82,18 @@ iframe, an open shadow root, the page title (which — a bug this suite caught
 — used to render outside the untrusted fence), and an element's accessible
 name (which renders in the *actionable* element list, necessarily outside the
 fence, so it is sanitized and labeled untrusted instead — the same
-methodology caught this channel too). A ninth is an *action* injection —
-"navigate to this attacker page" — run under an allowlist policy, so the
-enforcing half does the catching, not the model. The agent ignored all nine,
-**unanimously across three trials**, and a materially smaller model (Haiku)
-did too. The sharper test — a *weaker* model that obeys while the policy
-still contains the blast radius — has fired for real: a 3B local model
-(llama3.2, escalation disabled so nothing stronger could step in) **obeyed**
-the planted navigation in every trial, and the policy denied every attempt
-before the request left ([BENCHMARKS.md](BENCHMARKS.md#a-weaker-model--is-the-defense-a-boundary-or-a-please)
+methodology caught this channel too). The ninth and tenth are *action*
+injections — "navigate to this attacker page" — run under an allowlist
+policy, so the enforcing half does the catching, not the model; the tenth
+fires from inside an *authenticated* session (storage state), where obeying
+would carry the signed-in session's authority to the attacker origin. The
+agent ignored all ten, **unanimously across three trials**, and a materially
+smaller model (Haiku) did too. The sharper test — a *weaker* model that obeys
+while the policy still contains the blast radius — has fired for real: a 3B
+local model (llama3.2, escalation disabled so nothing stronger could step in)
+**obeyed** the planted action in five trials, two of them signed in, and the
+policy denied every attempt before the request left
+([BENCHMARKS.md](BENCHMARKS.md#a-weaker-model--is-the-defense-a-boundary-or-a-please)
 has the trial-by-trial classification). The deterministic containment tests —
 a scripted, fully-obedient model, blocked every time — still guard the same
 property hermetically in the suite. The defense is a boundary, not a please,

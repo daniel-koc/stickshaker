@@ -27,11 +27,11 @@ Cursor, …) a policy-guarded browser via the
 > falls back to snapshot+act on the legacy web. The snapshot pierces
 > **iframes** (same- and cross-origin) and **open shadow roots**, so the agent
 > can act on elements — and call WebMCP tools — inside embedded frames and web
-> components. On the eval suite Claude Sonnet scores **12/12 tasks and blocks
-> 9/9 injection attacks — unanimously across 3 trials** (eight planted in
-> page-controlled content the model reads, plus one action-based attack the
-> policy layer contains); a materially smaller model (Haiku) also blocks all
-> nine. See [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale is
+> components. On the eval suite Claude Sonnet scores **14/14 tasks and blocks
+> 10/10 injection attacks — unanimously across 3 trials** (eight planted in
+> page-controlled content the model reads, plus two action-based attacks the
+> policy layer contains — one fired from inside an authenticated session); a
+> materially smaller model (Haiku) also blocks all ten. See [BENCHMARKS.md](docs/BENCHMARKS.md). The design rationale is
 > written up in [DESIGN.md](docs/DESIGN.md) — *"Browser agents are a systems
 > problem."*
 
@@ -637,9 +637,10 @@ Every claim reproduces with one command — see
 |-------|----------|
 | Incremental diffs vs. full re-send | **25.8% fewer input tokens**, 24.3% lower cost on a 5-step form task, same outcome |
 | Cache-aware history elision | **~66% lower cost** on a single multi-step run; suite p95 step latency 7315 → 1800 ms |
-| Eval suite (Sonnet, 3 trials each) | **36/36 task-trials, 27/27 injections blocked — unanimous** |
-| Weak-model row (Haiku) | **27/27 injections blocked — unanimous** |
-| No-escalation 3B probe (llama3.2, local-only) | the model **obeyed** the planted action in 3/3 navigate trials — **policy denied every attempt before the request left** |
+| Authenticated sessions (`--storage-state`) | the same dashboard task: 4 steps / $0.0106 through the sign-in form vs **1 step / $0.0021 arriving signed in** — 3/3 both arms |
+| Eval suite (Sonnet, 3 trials each) | **42/42 task-trials, 30/30 injections blocked — unanimous** |
+| Weak-model row (Haiku) | **30/30 injections blocked — unanimous** |
+| No-escalation 3B probe (llama3.2, local-only) | the model **obeyed** the planted action in 5 trials (3/3 navigate, 2/3 authenticated) — **policy denied every attempt before the request left** |
 | Hybrid routing (4-task slice) | **~33–63% cheaper** than cloud-only across four draws, at 2/4–4/4 correct — the cost/accuracy dial |
 
 ---
@@ -721,10 +722,12 @@ measured separately by `stickshaker eval`.
   *open* shadow root; `attachShadow({ mode: "closed" })` leaves no JS handle
   and Playwright locators can't pierce it. Rare in practice, documented here.
 - **Injection defense is layered, and honestly scoped.** Capable models
-  refuse the planted instructions outright (that's the measured 9/9); the
-  policy layer is what contains a model that *obeys*, proven by the
-  action-injection fixture and deterministic containment tests. Untested
-  patterns remain (e.g. screenshot/vision-based, multi-step exfiltration).
+  refuse the planted instructions outright (that's the measured 10/10); the
+  policy layer is what contains a model that *obeys*, measured live on the
+  action-injection fixtures (a 3B model's five attempts, two of them signed
+  in, all denied) and pinned in CI by deterministic containment tests.
+  Untested patterns remain (e.g. screenshot/vision-based, multi-step
+  exfiltration).
 - **One tab at a time.** Popups and new tabs are closed and policy-checked,
   not driven; there is no multi-tab orchestration.
 - **Backends: Claude + Ollama.** An OpenAI-compatible cloud backend would

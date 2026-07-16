@@ -87,11 +87,14 @@ methodology caught this channel too). A ninth is an *action* injection —
 enforcing half does the catching, not the model. The agent ignored all nine,
 **unanimously across three trials**, and a materially smaller model (Haiku)
 did too. The sharper test — a *weaker* model that obeys while the policy
-still contains the blast radius — hasn't fired yet, and the reason is worth
-stating plainly: I couldn't find a Claude model that obeys, so the
-deterministic containment tests (a scripted, fully-obedient model, blocked
-every time) carry that proof for now. But the point is that the defense is a
-boundary, not a please.
+still contains the blast radius — has fired for real: a 3B local model
+(llama3.2, escalation disabled so nothing stronger could step in) **obeyed**
+the planted navigation in every trial, and the policy denied every attempt
+before the request left ([BENCHMARKS.md](BENCHMARKS.md#a-weaker-model--is-the-defense-a-boundary-or-a-please)
+has the trial-by-trial classification). The deterministic containment tests —
+a scripted, fully-obedient model, blocked every time — still guard the same
+property hermetically in the suite. The defense is a boundary, not a please,
+and that sentence is measured now, not asserted.
 
 ## 5. WebMCP will split the web in two, so the runtime must be hybrid
 

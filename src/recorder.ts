@@ -16,6 +16,9 @@ export interface RunMeta {
   ollamaUrl?: string;
   /** --no-escalate on a local run, recorded so a resume keeps the guarantee. */
   noEscalate?: boolean;
+  /** Storage-state file PATH — never its contents. The trace records the fact that
+   *  the run was authenticated and with which file, so a resume can re-apply it. */
+  storageState?: string;
   policyPath?: string;
   /** sameOriginOnly anchor, recorded so a resume keeps the original scope. */
   taskOrigin?: string;

@@ -54,6 +54,12 @@ describe("loadPolicy", () => {
   it("rejects non-positive budgets", () => {
     assert.throws(() => load("budgets:\n  maxSteps: 0\n"), /invalid policy file/);
   });
+
+  it("parses allowStorageState and rejects a non-boolean value", () => {
+    assert.equal(load("allowStorageState: true\n").allowStorageState, true);
+    assert.equal(load("").allowStorageState, undefined);
+    assert.throws(() => load('allowStorageState: "yes"\n'), /allowStorageState/);
+  });
 });
 
 describe("evaluateAction", () => {

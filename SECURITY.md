@@ -30,8 +30,16 @@ Pre-1.0, only the latest commit on `main` is supported.
   results) reaching the model outside their untrusted labeling, or forged
   fence markers surviving neutralization.
 - **Secret exposure** — password-field values reaching the model, the trace,
-  or the report (they are redacted at snapshot capture), or an API key
-  leaking into any artifact.
+  or the report (they are redacted at snapshot capture); an API key leaking
+  into any artifact; or any value from a `--storage-state` file (cookie or
+  localStorage contents) appearing in a trace, an observation, a report, or a
+  model request — the runtime records the *path* of the state file, never its
+  contents, and a sentinel-based leak test enforces exactly this.
+- **Storage-state gate bypass** — the MCP server loading a storage-state file
+  (via `browse_task`'s `storage_state` argument or the `--storage-state`
+  launch flag) without the policy's explicit `allowStorageState: true`, or a
+  resume silently continuing unauthenticated after the recorded state file
+  disappeared.
 - **Trace escape** — `get_trace` or the report generator reading files
   outside the run directory they were pointed at.
 
@@ -53,8 +61,17 @@ Pre-1.0, only the latest commit on `main` is supported.
   [`stickshaker.policy.example.yaml`](stickshaker.policy.example.yaml); for
   anything that touches authenticated sessions, prefer a domain allowlist
   plus `sameOriginOnly: true` and `--approve prompt`.
+- Treat a `--storage-state` file as what it is: a credentials file. State is
+  applied when the browser context is created, so **the policy's origin rules
+  are the only thing confining where that signed-in authority can be
+  steered** — always pair state with a domain allowlist (the CLI warns when
+  you don't; the `inject-authed` fixture measures the lure this confines).
+  The runtime never writes the file's values anywhere — traces record the
+  path only — but the file itself is yours to protect, and the *pages* an
+  authenticated session visits render account data that lands in traces and
+  screenshots like any other page content.
 - Treat `.stickshaker/traces/` as sensitive. A trace holds the page text and
-  a screenshot of everything the agent saw. Password fields are redacted;
-  nothing else is.
+  a screenshot of everything the agent saw — for authenticated runs, that is
+  logged-in content. Password fields are redacted; nothing else is.
 - Keep `ANTHROPIC_API_KEY` in `.env` or the environment — never in a policy
   file or a task string, where it would end up in the trace.

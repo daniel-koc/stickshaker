@@ -20,6 +20,13 @@ requireApproval: []
 # Tool names that are always blocked.
 block: []
 
+# If true, the MCP server may load a Playwright storage-state file (an
+# authenticated session): the browse_task `storage_state` argument and the
+# `mcp --storage-state` launch flag are both refused without it. Storage state
+# is credentials — pair it with a domains allowlist so the signed-in session
+# cannot be steered off the sites it belongs to.
+allowStorageState: false
+
 budgets:
   maxSteps: 30
   maxCostUsd: 1.00

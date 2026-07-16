@@ -120,6 +120,7 @@ program
   .option("--ollama-url <url>", "Ollama base URL", "http://localhost:11434")
   .option("--no-escalate", "local router only: a step with no usable local action fails instead of escalating to Claude")
   .option("--policy <file>", "guardrail policy YAML file")
+  .option("--storage-state <file>", "Playwright storage state JSON (cookies + localStorage) applied at browser launch, for authenticated sessions")
   .option("--approve <mode>", "how to handle actions needing approval: auto | prompt | deny", parseApproveMode, "prompt")
   .option("--trace-dir <dir>", "directory for run traces", ".stickshaker/traces")
   .option("--no-trace", "disable trace recording")
@@ -136,6 +137,7 @@ program
     ollamaUrl: string;
     escalate: boolean;
     policy?: string;
+    storageState?: string;
     approve: ApproveMode;
     traceDir: string;
     trace: boolean;
@@ -147,7 +149,14 @@ program
       console.error("ERROR: --no-escalate only applies to --router local.");
       process.exit(1);
     }
-    console.error(`▶ task: ${task}   [mode: ${opts.mode}, router: ${opts.router}, model: ${opts.model}${opts.policy ? ", policy: " + opts.policy : ""}]`);
+    const policy = opts.policy ? loadPolicy(opts.policy) : undefined;
+    // Storage state is credentials: without origin rules, nothing confines where
+    // the authenticated session may be steered. Warn, don't block — debugging runs
+    // are legitimate — but make the exposure impossible to miss.
+    if (opts.storageState && !(policy?.domains?.allow?.length || policy?.sameOriginOnly)) {
+      console.error("⚠ --storage-state without origin confinement: add a domains allowlist or sameOriginOnly to the policy, or the authenticated session can be steered anywhere the model decides.");
+    }
+    console.error(`▶ task: ${task}   [mode: ${opts.mode}, router: ${opts.router}, model: ${opts.model}${opts.policy ? ", policy: " + opts.policy : ""}${opts.storageState ? ", storage-state: " + opts.storageState : ""}]`);
     const result = await runAgent({
       task,
       startUrl: opts.url,
@@ -159,10 +168,11 @@ program
       localModel: opts.localModel,
       ollamaUrl: opts.ollamaUrl,
       ...(opts.escalate === false ? { noEscalate: true } : {}),
+      ...(opts.storageState ? { storageState: opts.storageState } : {}),
       headless: !opts.headed,
       cache: opts.cache,
       traceDir: opts.trace ? opts.traceDir : undefined,
-      ...(opts.policy ? { policy: loadPolicy(opts.policy), policyPath: opts.policy } : {}),
+      ...(policy ? { policy, policyPath: opts.policy } : {}),
       approve: makeApprover(opts.approve),
       onStep: (line) => console.error("  " + line),
     });
@@ -220,12 +230,14 @@ program
   .command("mcp")
   .description("Start the Stickshaker MCP server on stdio (for Claude Desktop / Claude Code).")
   .option("--policy <file>", "guardrail policy YAML file applied to all tool actions")
+  .option("--storage-state <file>", "storage state for the shared act/snapshot session; requires allowStorageState: true in the policy")
   .option("--trace-dir <dir>", "directory for browse_task traces", ".stickshaker/traces")
   .option("--ollama-url <url>", "Ollama base URL for recall embeddings", "http://localhost:11434")
   .option("--embed-model <name>", "Ollama embedding model for recall", "nomic-embed-text")
-  .action(async (opts: { policy?: string; traceDir: string; ollamaUrl: string; embedModel: string }) => {
+  .action(async (opts: { policy?: string; storageState?: string; traceDir: string; ollamaUrl: string; embedModel: string }) => {
     await startStdioServer({
       ...(opts.policy ? { policy: loadPolicy(opts.policy), policyPath: opts.policy } : {}),
+      ...(opts.storageState ? { storageState: opts.storageState } : {}),
       traceDir: opts.traceDir,
       ollamaUrl: opts.ollamaUrl,
       embedModel: opts.embedModel,
@@ -356,9 +368,10 @@ program
   .command("snapshot")
   .description("Launch the browser, snapshot a page, and print the element list. No API key needed.")
   .requiredOption("--url <url>", "URL to snapshot")
+  .option("--storage-state <file>", "Playwright storage state JSON applied at launch (inspect authenticated pages)")
   .option("--headed", "show the browser window", false)
-  .action(async (opts: { url: string; headed: boolean }) => {
-    const browser = await BrowserSession.launch({ headless: !opts.headed });
+  .action(async (opts: { url: string; storageState?: string; headed: boolean }) => {
+    const browser = await BrowserSession.launch({ headless: !opts.headed, storageState: opts.storageState });
     try {
       const nav = await browser.navigate(opts.url);
       if (!nav.ok) {

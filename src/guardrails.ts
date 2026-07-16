@@ -16,6 +16,15 @@ export interface Policy {
   requireApproval?: string[];
   /** Tool names that are always blocked. */
   block?: string[];
+  /**
+   * Allow the MCP server to load a storage-state file (credentials) — the
+   * `browse_task` `storage_state` argument and the `mcp --storage-state` launch
+   * flag are both refused without it. Off by default: a client asking a server to
+   * read a credentials file off local disk is a policy decision, not a free
+   * argument. The CLI's own `--storage-state` is operator-typed (the same trust
+   * as choosing the policy file itself) and is not gated by this.
+   */
+  allowStorageState?: boolean;
   budgets?: { maxSteps?: number; maxCostUsd?: number };
 }
 
@@ -44,6 +53,7 @@ const PolicySchema = z.strictObject({
   sameOriginOnly: z.boolean().optional(),
   requireApproval: z.array(z.string()).optional(),
   block: z.array(z.string()).optional(),
+  allowStorageState: z.boolean().optional(),
   budgets: z.strictObject({
     maxSteps: z.number().int().positive().optional(),
     maxCostUsd: z.number().positive().optional(),

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { buildServer } from "../src/mcp.js";
 import { startSite, startMcpClient, refOf, type SiteHandle, type McpHandle } from "./helpers.js";
 
 /**
@@ -14,8 +15,12 @@ import { startSite, startMcpClient, refOf, type SiteHandle, type McpHandle } fro
 let site: SiteHandle;
 
 before(async () => {
-  site = await startSite((path, url) => {
+  site = await startSite((path, url, headers) => {
     switch (path) {
+      case "/memberzone":
+        return String(headers.cookie ?? "").includes("msession=mcp-state-r4v8")
+          ? `<html><body><h1>Member zone</h1><p>MEMBER-CONTENT-91</p></body></html>`
+          : `<html><body><h1>Anonymous</h1><p>signed out</p></body></html>`;
       case "/home":
         return `<html><body><h1>Home</h1><p>the giraffe fact lives here</p>
           <a href="${site.away}/denied">off you go</a>
@@ -242,6 +247,58 @@ describe("serialization", () => {
       assert.match(actOut, /SLOW-TARGET/);
       assert.match(snapOut, /SLOW-TARGET/);
       assert.match(snapOut, new RegExp(`URL: ${site.ok}/slow`));
+    } finally {
+      await mcp.close();
+    }
+  });
+});
+
+describe("storage state", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "sk-mcp-state-"));
+  const stateFile = join(stateDir, "state.json");
+  writeFileSync(stateFile, JSON.stringify({
+    cookies: [{ name: "msession", value: "mcp-state-r4v8", domain: "127.0.0.1", path: "/", expires: -1, httpOnly: false, secure: false, sameSite: "Lax" }],
+    origins: [],
+  }));
+  after(() => rmSync(stateDir, { recursive: true, force: true }));
+
+  it("browse_task refuses a storage_state argument the policy has not opted into", async () => {
+    const mcp = await startMcpClient({}); // empty policy: allowStorageState absent
+    try {
+      const out = await mcp.call("browse_task", { task: "t", storage_state: stateFile });
+      assert.match(out, /BLOCKED BY POLICY/);
+      assert.match(out, /allowStorageState/);
+    } finally {
+      await mcp.close();
+    }
+  });
+
+  it("refuses a launch-flag storage state at startup when the policy has not opted in", () => {
+    assert.throws(() => buildServer({ storageState: stateFile }), /allowStorageState: true/);
+  });
+
+  it("refuses a launch-flag storage state whose file is missing, at startup", () => {
+    assert.throws(
+      () => buildServer({ policy: { allowStorageState: true }, storageState: join(stateDir, "gone.json") }),
+      /storage state file not found/,
+    );
+  });
+
+  it("authenticates the shared act/snapshot session when the policy opts in", async () => {
+    const mcp = await startMcpClient({ policy: { allowStorageState: true }, storageState: stateFile });
+    try {
+      const out = await mcp.call("snapshot", { url: `${site.ok}/memberzone` });
+      assert.match(out, /MEMBER-CONTENT-91/, "the lazily created shared session carried the state file's cookie");
+    } finally {
+      await mcp.close();
+    }
+  });
+
+  it("browse_task reports a missing state file cleanly once the policy allows it", async () => {
+    const mcp = await startMcpClient({ policy: { allowStorageState: true } });
+    try {
+      const out = await mcp.call("browse_task", { task: "t", storage_state: join(stateDir, "gone.json") });
+      assert.match(out, /storage state file not found/);
     } finally {
       await mcp.close();
     }

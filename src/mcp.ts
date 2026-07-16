@@ -96,7 +96,14 @@ class Interactive {
   private chain: Promise<unknown> = Promise.resolve();
   taskOrigin?: string;
 
-  constructor(private readonly ollamaUrl: string, private readonly embedModel: string, private readonly policy: Policy) {}
+  constructor(
+    private readonly ollamaUrl: string,
+    private readonly embedModel: string,
+    private readonly policy: Policy,
+    /** Storage state for the shared session (the `mcp --storage-state` launch flag);
+     *  buildServer has already policy-gated it before it reaches here. */
+    private readonly storageState?: string | undefined,
+  ) {}
 
   /**
    * Serialize browser-touching tool handlers. The MCP SDK dispatches requests as
@@ -114,6 +121,7 @@ class Interactive {
     if (!this.session) {
       this.session = await BrowserSession.launch({
         headless: true,
+        storageState: this.storageState,
         // Extends the destination policy into embedded documents (denied-origin
         // iframes are omitted, their tools unavailable). Reads taskOrigin through
         // `this` because the anchor is only set by the first navigate.
@@ -262,12 +270,27 @@ export function buildServer(opts: {
   traceDir?: string | undefined;
   ollamaUrl?: string | undefined;
   embedModel?: string | undefined;
+  /** Storage state for the SHARED act/snapshot session. The session is created
+   *  lazily on first use, so its state must arrive at launch — a per-call argument
+   *  would land after the context already exists. Policy-gated below. */
+  storageState?: string | undefined;
 }): {
   server: McpServer;
   close: () => Promise<void>;
 } {
   const policy = opts.policy ?? EMPTY_POLICY;
-  const interactive = new Interactive(opts.ollamaUrl ?? DEFAULT_OLLAMA_URL, opts.embedModel ?? DEFAULT_EMBED_MODEL, policy);
+  // Storage state is credentials. Loading it into a server that any connected
+  // client can drive is a policy decision, not a launch-flag default — refuse at
+  // startup, loudly, rather than lazily on the first act/snapshot call.
+  if (opts.storageState) {
+    if (policy.allowStorageState !== true) {
+      throw new Error("--storage-state requires a policy with allowStorageState: true (storage state is credentials; the policy must opt in)");
+    }
+    if (!existsSync(opts.storageState)) {
+      throw new Error(`storage state file not found: ${opts.storageState}`);
+    }
+  }
+  const interactive = new Interactive(opts.ollamaUrl ?? DEFAULT_OLLAMA_URL, opts.embedModel ?? DEFAULT_EMBED_MODEL, policy, opts.storageState);
   const server = new McpServer({ name: "stickshaker", version: VERSION });
   // get_trace must not read arbitrary filesystem paths — confine it to the trace dir.
   const traceBase = resolve(opts.traceDir ?? ".stickshaker/traces");
@@ -283,9 +306,19 @@ export function buildServer(opts: {
         url: z.string().optional().describe("Starting URL."),
         mode: z.enum(["diff", "full"]).optional().describe("Observation mode (default diff)."),
         max_steps: z.number().int().positive().optional().describe("Step cap (default 20)."),
+        storage_state: z.string().optional().describe("Server-side path to a Playwright storage state JSON file, for an authenticated session. Requires allowStorageState: true in the server policy."),
       },
     },
-    async ({ task, url, mode, max_steps }) => {
+    async ({ task, url, mode, max_steps, storage_state }) => {
+      // Policy gate first, before anything else: a client asking the server to
+      // read a credentials file off local disk is a policy violation unless the
+      // policy explicitly opted in — regardless of how the server is configured.
+      if (storage_state && policy.allowStorageState !== true) {
+        return textResult("BLOCKED BY POLICY: storage_state requires allowStorageState: true in the server policy. The task was not run.", true);
+      }
+      if (storage_state && !existsSync(storage_state)) {
+        return textResult(`storage state file not found: ${storage_state}`, true);
+      }
       if (!process.env.ANTHROPIC_API_KEY) return textResult("ANTHROPIC_API_KEY is not set on the server.", true);
       const result = await runAgent({
         task,
@@ -296,6 +329,7 @@ export function buildServer(opts: {
         keyframeInterval: 5,
         headless: true,
         policy,
+        ...(storage_state ? { storageState: storage_state } : {}),
         ...(opts.policyPath ? { policyPath: opts.policyPath } : {}),
         ...(opts.traceDir ? { traceDir: opts.traceDir } : {}),
       });
@@ -435,6 +469,7 @@ export async function startStdioServer(opts: {
   traceDir?: string | undefined;
   ollamaUrl?: string | undefined;
   embedModel?: string | undefined;
+  storageState?: string | undefined;
 }): Promise<void> {
   const { server, close } = buildServer(opts);
   const transport = new StdioServerTransport();

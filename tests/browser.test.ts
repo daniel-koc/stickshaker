@@ -1,5 +1,8 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { BrowserSession } from "../src/browser.js";
 import { startSite, type SiteHandle } from "./helpers.js";
 
@@ -13,8 +16,13 @@ let site: SiteHandle;
 let b: BrowserSession;
 
 before(async () => {
-  site = await startSite((path, url) => {
+  site = await startSite((path, url, headers) => {
     switch (path) {
+      case "/cookiecheck":
+        // Reports whether the storage-state cookie arrived with the request.
+        return String(headers.cookie ?? "").includes("skstate=applied-b7q2")
+          ? `<html><body><h1>Authenticated</h1><p>COOKIE-ARRIVED</p></body></html>`
+          : `<html><body><h1>Anonymous</h1><p>NO-COOKIE</p></body></html>`;
       case "/basic":
         return `<html><body>
           <h1>Basic</h1>
@@ -539,5 +547,42 @@ describe("WebMCP bridge", () => {
     const r = await b.callWebMcpTool(999, "anything", {});
     assert.equal(r.ok, false);
     assert.match(r.detail, /no longer on the page/);
+  });
+});
+
+describe("storage state", () => {
+  // State applies at CONTEXT creation, so these launch their own sessions.
+  const dir = mkdtempSync(join(tmpdir(), "sk-state-"));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("applies the file's cookies to the context from the first request", async () => {
+    const file = join(dir, "ok.json");
+    writeFileSync(file, JSON.stringify({
+      cookies: [{ name: "skstate", value: "applied-b7q2", domain: "127.0.0.1", path: "/", expires: -1, httpOnly: false, secure: false, sameSite: "Lax" }],
+      origins: [],
+    }));
+    const s = await BrowserSession.launch({ headless: true, storageState: file });
+    try {
+      await s.navigate(`${site.ok}/cookiecheck`);
+      assert.match((await s.snapshot()).text, /COOKIE-ARRIVED/);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("rejects a missing state file with a clear error, before any browser launches", async () => {
+    await assert.rejects(
+      BrowserSession.launch({ headless: true, storageState: join(dir, "nope.json") }),
+      /cannot load storage state file/,
+    );
+  });
+
+  it("rejects a JSON file that is not a storage state (the wrong-file case)", async () => {
+    const file = join(dir, "notstate.json");
+    writeFileSync(file, JSON.stringify({ name: "some-package", version: "1.0.0" }));
+    await assert.rejects(
+      BrowserSession.launch({ headless: true, storageState: file }),
+      /does not look like a Playwright storage state file/,
+    );
   });
 });

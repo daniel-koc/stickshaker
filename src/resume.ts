@@ -49,6 +49,7 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     localModel?: string;
     ollamaUrl?: string;
     noEscalate?: boolean;
+    storageState?: string;
     policyPath?: string;
     taskOrigin?: string;
   };
@@ -95,6 +96,17 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     }
   }
 
+  // An authenticated run must not silently resume signed out. The recorded state
+  // file is re-applied when present; its absence is a hard refusal — unlike a
+  // missing policy file, which warns above: resuming unguarded is visible in the
+  // output and fixable with --policy, while resuming unauthenticated just fails
+  // confusingly later, after already showing the task to a signed-out site.
+  if (meta.storageState && !existsSync(meta.storageState)) {
+    throw new Error(
+      `cannot resume: the storage state file this run was recorded with is gone (${meta.storageState}) — the resumed session would be unauthenticated. Restore the file, or start a fresh run without it.`,
+    );
+  }
+
   // Keep the ORIGINAL origin scope: startUrl below is the page the run stopped
   // on, so letting runAgent derive taskOrigin from it would silently re-anchor a
   // sameOriginOnly policy to wherever the interruption happened.
@@ -122,6 +134,7 @@ export async function resumeRun(runDir: string, opts: ResumeOptions): Promise<Ag
     ...(meta.localModel ? { localModel: meta.localModel } : {}),
     ...(meta.ollamaUrl ? { ollamaUrl: meta.ollamaUrl } : {}),
     ...(meta.noEscalate ? { noEscalate: true } : {}),
+    ...(meta.storageState ? { storageState: meta.storageState } : {}),
     ...(policy ? { policy } : {}),
     ...(policyPath ? { policyPath } : {}),
     ...(opts.approve ? { approve: opts.approve } : {}),

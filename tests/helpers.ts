@@ -10,7 +10,7 @@
  *   predetermined tool calls — agent policy behavior is testable without any LLM.
  * - startMcpClient: buildServer wired to an in-memory MCP client.
  */
-import { createServer } from "node:http";
+import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -27,10 +27,13 @@ export interface SiteHandle {
 
 export type SiteResponse = string | { html: string; delayMs?: number };
 
-export async function startSite(handler: (path: string, url: URL) => SiteResponse): Promise<SiteHandle> {
+export async function startSite(
+  // Handlers that don't care about request headers just declare (path, url).
+  handler: (path: string, url: URL, headers: IncomingHttpHeaders) => SiteResponse,
+): Promise<SiteHandle> {
   const server = createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://fixture");
-    const r = handler(u.pathname, u);
+    const r = handler(u.pathname, u, req.headers);
     const { html, delayMs = 0 } = typeof r === "string" ? { html: r } : r;
     const send = (): void => {
       res.setHeader("content-type", "text/html; charset=utf-8");
@@ -60,20 +63,25 @@ export interface FakeOllamaHandle {
   url: string;
   /** Mutable: unshift/replace between runs. Each completion request consumes one entry. */
   script: ScriptedCall[];
+  /** Raw body of every completion request received — the bytes that actually left
+   *  for the model backend, so leak tests can grep what the model was sent. */
+  requests: string[];
   close: () => Promise<void>;
 }
 
 export async function startFakeOllama(initial: ScriptedCall[] = []): Promise<FakeOllamaHandle> {
-  const handle: FakeOllamaHandle = { url: "", script: [...initial], close: async () => {} };
+  const handle: FakeOllamaHandle = { url: "", script: [...initial], requests: [], close: async () => {} };
   const server = createServer((req, res) => {
     if (req.url?.startsWith("/api/tags")) {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ models: [] }));
       return;
     }
-    // Drain the request body, then answer with the next scripted tool call.
-    req.on("data", () => {});
+    // Capture the request body, then answer with the next scripted tool call.
+    let body = "";
+    req.on("data", (chunk: Buffer) => { body += chunk.toString("utf8"); });
     req.on("end", () => {
+      handle.requests.push(body);
       const next = handle.script.shift() ?? { name: "fail", args: { reason: "script exhausted" } };
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({

@@ -40,6 +40,13 @@ export interface AgentOptions {
   model: string;
   maxSteps: number;
   headless: boolean;
+  /**
+   * Playwright storage-state file (cookies + localStorage) for authenticated
+   * sessions, applied at context creation. Recorded in the trace by PATH only —
+   * never contents. State makes the policy's origin rules load-bearing: they are
+   * what confine an authenticated context (see SECURITY.md).
+   */
+  storageState?: string | undefined;
   mode: RunMode;
   keyframeInterval: number;
   /** If set, write a flight-recorder trace under this directory. */
@@ -110,6 +117,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
   // its page-provided tools are neither offered nor callable.
   const browser = await BrowserSession.launch({
     headless: opts.headless,
+    storageState: opts.storageState,
     frameAllowed: (url) => evaluateDestination(policy, url, taskOrigin).effect === "allow",
   });
   const usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
@@ -128,6 +136,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
     ...(opts.localModel ? { localModel: opts.localModel } : {}),
     ...(opts.ollamaUrl ? { ollamaUrl: opts.ollamaUrl } : {}),
     ...(opts.noEscalate ? { noEscalate: true } : {}),
+    ...(opts.storageState ? { storageState: opts.storageState } : {}),
     ...(opts.policyPath ? { policyPath: opts.policyPath } : {}),
     ...(taskOrigin ? { taskOrigin } : {}),
     ...(opts.resumedFrom ? { resumedFrom: opts.resumedFrom } : {}),

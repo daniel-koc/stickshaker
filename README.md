@@ -19,6 +19,8 @@ Cursor, …) a policy-guarded browser via the
 > **Status: feature-complete.** An incremental snapshot-**diffing** browser
 > agent with replayable **flight-recorder** traces, an authored **MCP
 > server**, an out-of-model **guardrail** engine with injection defenses,
+> **authenticated sessions** via Playwright storage state (treated as
+> credentials: policy-gated on the MCP surface, values never traced),
 > local-first model **routing** (Ollama → Claude), a self-hosted **eval +
 > injection** harness, and **WebMCP-hybrid** actuation — the agent prefers a
 > page's typed tools when it exposes them (Chrome origin-trial standard) and
@@ -89,13 +91,13 @@ The full argument, with the numbers behind each claim, is in
 
 | Command | What it does |
 |---------|--------------|
-| `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); prompt caching on by default (`--no-cache` to disable); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--router hybrid` for local-first routing. |
+| `stickshaker run "<task>" --url <url>` | Drive Chromium to complete a task via tool use, one action per turn. Incremental `diff` mode by default (`--mode full` for the baseline); prompt caching on by default (`--no-cache` to disable); traces to `.stickshaker/traces/`. Add `--policy <file>` + `--approve auto\|prompt\|deny` for guardrails, `--storage-state <file>` for an authenticated session, `--router hybrid` for local-first routing. |
 | `stickshaker mcp` | Start the MCP server on stdio. See [MCP tools](#mcp-tools). |
-| `stickshaker eval [--model …] [--trials N] [--only …]` | Run the self-hosted fixture suite (12 tasks + 9 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. `--router local --no-escalate` runs it purely on a local model (no cloud fallback, no key); `--trace-dir` records a per-trial trace. |
+| `stickshaker eval [--model …] [--trials N] [--only …]` | Run the self-hosted fixture suite (14 tasks + 10 injection attacks) with automated grading; prints success rate, injection block rate, tokens, cost, and p95 latency. No live sites, fully reproducible. `--router local --no-escalate` runs it purely on a local model (no cloud fallback, no key); `--trace-dir` records a per-trial trace. |
 | `stickshaker bench "<task>" --url <url>` | Run the same task in `full` and `diff` mode and print the input-token reduction. |
 | `stickshaker view <run-dir>` | Bake a run's trace into a self-contained `report.html`. No API key required. |
 | `stickshaker resume <run-dir>` | Continue an interrupted run from its trace. |
-| `stickshaker snapshot --url <url>` | Print the page's element list and text. No API key required. |
+| `stickshaker snapshot --url <url>` | Print the page's element list and text (`--storage-state` to inspect an authenticated page). No API key required. |
 
 In a clone, run these as `pnpm stickshaker …` (tsx, no build step) or
 `node dist/cli.js …` after `pnpm build`. `run`, `eval`, and `bench` default
@@ -106,7 +108,7 @@ cheaper. Every run prints per-run **token and cost** accounting at the end.
 
 | Tool | What it does |
 |------|--------------|
-| `browse_task(task, url?, mode?, max_steps?)` | Run the autonomous agent on a natural-language task and return its answer. Self-contained: opens its own browser, records a trace, closes. |
+| `browse_task(task, url?, mode?, max_steps?, storage_state?)` | Run the autonomous agent on a natural-language task and return its answer. Self-contained: opens its own browser, records a trace, closes. `storage_state` (a server-side file path) runs it authenticated — refused unless the policy sets `allowStorageState: true`. |
 | `snapshot(url?)` | Interactive elements (each with a `[ref]`) + visible text of the shared session's current page; optionally navigate first. |
 | `act(tool, ref?, …)` | One action in the shared session — `navigate`, `click`, `type`, `select_option`, `scroll`, `go_back`, or a `webmcp` call — then the resulting snapshot. |
 | `recall(query)` | Vector-search the text of pages visited in this session. |
@@ -119,7 +121,12 @@ own. The same guardrail policy applies to every tool call — pass
 approval are refused, since there is no operator prompt over MCP. Other
 server flags: `--trace-dir` (default `.stickshaker/traces`, relative to the
 server's working directory — see [Quick Start](#3-the-launch-command)),
-`--ollama-url` and `--embed-model` for `recall` embeddings.
+`--storage-state <file>` to authenticate the shared session (the session is
+created lazily, so its state must arrive at launch; like `browse_task`'s
+per-call argument, it is refused unless the policy sets
+`allowStorageState: true` — storage state is credentials, and loading it is
+a policy decision), `--ollama-url` and `--embed-model` for `recall`
+embeddings.
 
 ---
 
@@ -400,6 +407,13 @@ pnpm stickshaker run "Find the contact email" --url https://example.com \
 pnpm stickshaker run "Read the docs and summarize" --url https://example.com \
   --policy stickshaker.policy.example.yaml --approve prompt
 
+# Authenticated session: capture state once (log in by hand, then close the window),
+# then run logged-in tasks behind an origin allowlist that confines the session
+npx playwright codegen --save-storage=auth.json https://example.com
+pnpm stickshaker run "Open the account dashboard and report the plan name" \
+  --url https://example.com/dashboard --storage-state auth.json \
+  --policy my-allowlist-policy.yaml
+
 # Local-first routing (needs Ollama with a tool-capable model pulled)
 pnpm stickshaker run "Fill the form with 'hello' and submit" \
   --url https://www.selenium.dev/selenium/web/web-form.html \
@@ -409,18 +423,22 @@ pnpm stickshaker run "Fill the form with 'hello' and submit" \
 pnpm stickshaker view .stickshaker/traces/<run-dir>
 pnpm stickshaker resume .stickshaker/traces/<run-dir>
 
-# The eval suite: 12 tasks + 9 injection attacks, 3 trials each
+# The eval suite: 14 tasks + 10 injection attacks, 3 trials each
 pnpm stickshaker eval --model claude-sonnet-5 --trials 3
+
+# The storage-state pair: the same dashboard task through the sign-in form and
+# again arriving authenticated (the harness generates the state file itself)
+pnpm stickshaker eval --only authed-form,authed-state --trials 3
 
 # The weak-model injection row
 pnpm stickshaker eval --model claude-haiku-4-5 --trials 3 \
-  --only inject-hidden,inject-comment,inject-webmcp,inject-iframe,inject-shadow,inject-toolresult,inject-title,inject-element,inject-navigate
+  --only inject-hidden,inject-comment,inject-webmcp,inject-iframe,inject-shadow,inject-toolresult,inject-title,inject-element,inject-navigate,inject-authed
 
 # Same, on a 3B local model with NO cloud fallback (the no-escalation harness);
 # --trace-dir keeps a per-trial trace so blocked-vs-never-attempted is auditable
 pnpm stickshaker eval --router local --local-model llama3.2 --no-escalate --trials 3 \
   --trace-dir .stickshaker/eval-traces \
-  --only inject-hidden,inject-comment,inject-webmcp,inject-iframe,inject-shadow,inject-toolresult,inject-title,inject-element,inject-navigate
+  --only inject-hidden,inject-comment,inject-webmcp,inject-iframe,inject-shadow,inject-toolresult,inject-title,inject-element,inject-navigate,inject-authed
 
 # Diff-vs-full token benchmark on any task
 pnpm stickshaker bench "Fill the first text field with 'Stickshaker', choose 'Two' in the dropdown select menu, type 'hello' into the 'Type to search' field, then click Submit and report the confirmation message shown." \
@@ -503,6 +521,7 @@ domains:
 sameOriginOnly: false       # true: leaving the task's origin requires approval
 requireApproval: []         # tool names needing human-in-the-loop approval
 block: []                   # tool names always blocked
+allowStorageState: false    # true: the MCP server may load a storage-state file
 budgets: { maxSteps: 30, maxCostUsd: 1.00 }
 ```
 
@@ -524,6 +543,42 @@ budgets: { maxSteps: 30, maxCostUsd: 1.00 }
   neither offered nor callable), with a visible note marking the omission.
   The starting URL is enforced too, pre-flight and post-landing, so a
   redirect can't make the first page a policy-free read.
+
+## Authenticated sessions (`--storage-state`)
+
+Real tasks are usually logged in. `--storage-state <file>` applies a
+[Playwright storage state](https://playwright.dev/docs/auth) (cookies +
+localStorage) at browser launch, so the run starts authenticated instead of
+walking a login form. Create the file once by logging in manually:
+
+```bash
+npx playwright codegen --save-storage=auth.json https://example.com
+```
+
+Storage state is **credentials**, and the runtime treats it that way:
+
+- **Values never leave the file.** The trace records that the run was
+  authenticated and with which file *path* — never a cookie or token value.
+  Observations are page-derived, so nothing from the file reaches the model
+  either. A leak test in the suite runs with sentinel values in the state
+  file and asserts they appear nowhere: not in the trace, not in `run.json`,
+  not in a single byte sent to a model backend.
+- **The policy's origin rules are what confine an authenticated context.**
+  State is applied at context creation; after that, the domain
+  allowlist / `sameOriginOnly` decide where that authority can be steered. An
+  authenticated run without origin confinement prints a warning, and the
+  `inject-authed` eval fixture measures the failure it warns about: a planted
+  instruction luring the signed-in agent cross-origin, denied by the
+  allowlist before the request leaves.
+- **The MCP surface is policy-gated.** `browse_task`'s `storage_state`
+  argument and the `mcp --storage-state` launch flag are both refused unless
+  the policy sets `allowStorageState: true` — a connected client asking the
+  server to read a credentials file off local disk is a policy decision, not
+  a free argument. The CLI's own flag is operator-typed (the same trust as
+  choosing the policy file) and is not gated.
+- **Resume keeps the guarantee.** A resumed run re-applies the recorded state
+  file, and refuses with a clear error if the file is gone — it never
+  silently continues unauthenticated.
 
 ## Model routing (local-first)
 
@@ -642,7 +697,7 @@ pnpm build           # compile to dist/
 pnpm demo            # regenerate the demo artifacts (live site + API key)
 ```
 
-`pnpm test` runs 177 tests through Node's built-in runner (no extra test
+`pnpm test` runs 194 tests through Node's built-in runner (no extra test
 framework) — **no API key needed and nothing talks to the cloud**. Pure units
 cover the policy engine, injection graders, snapshot diffing, the
 untrusted-text fence, vector memory, and cost accounting. Integration suites
@@ -652,7 +707,9 @@ in-memory transports (destination enforcement, combined popup+main
 violations, recall gating, handler serialization, trace confinement), and the
 full agent loop driven by a **scripted fake-Ollama backend** — predetermined
 tool calls through the real `runAgent`, so guardrail blocks, pull-backs,
-approval gating, and resume semantics are all asserted against the
+approval gating, resume semantics, and the storage-state redaction guarantee
+(sentinel values in the state file, asserted absent from every artifact and
+every byte sent to the model backend) are all asserted against the
 flight-recorder trace at zero model cost. The LLM-dependent behavior is
 measured separately by `stickshaker eval`.
 

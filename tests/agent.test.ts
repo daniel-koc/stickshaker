@@ -18,13 +18,24 @@ let ollama: FakeOllamaHandle;
 let tmp: string;
 let savedKey: string | undefined;
 
+// Storage-state sentinels: values that must NEVER appear in any artifact. High
+// entropy so a grep hit can only mean a real leak.
+const SENTINEL_COOKIE = "zk9314-cookie-value-sentinel";
+const SENTINEL_LOCAL = "qb7726-localstorage-value-sentinel";
+
 before(async () => {
   // Hermeticity: a failed local action escalates the next decision to the cloud,
   // so a key inherited from the shell would send these tests to the real API.
   savedKey = process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
-  site = await startSite((path, url) => {
+  site = await startSite((path, url, headers) => {
     switch (path) {
+      case "/gated":
+        // Cookie-gated page: the member content is reachable only when the state
+        // file's session cookie actually arrived with the request.
+        return String(headers.cookie ?? "").includes(`session=${SENTINEL_COOKIE}`)
+          ? `<html><body><h1>Member area</h1><p>member fact 7788</p></body></html>`
+          : `<html><body><h1>Signed out</h1></body></html>`;
       case "/home":
         return `<html><body><h1>Home</h1>
           <a href="${site.away}/denied?hops=${url.searchParams.get("hops") ?? "0"}">go away</a>
@@ -189,6 +200,63 @@ describe("--no-escalate", () => {
     const events = readFileSync(join(r.runDir!, "trace.jsonl"), "utf8")
       .split("\n").filter(Boolean).map((l) => JSON.parse(l) as { type: string; effect?: string; tool?: string });
     assert.ok(events.some((e) => e.type === "guardrail" && e.effect === "deny" && e.tool === "navigate"), "the attempted navigation was policy-denied");
+  });
+});
+
+describe("storage state", () => {
+  // A state file whose cookie the /gated fixture accepts, carrying sentinel VALUES
+  // (cookie + localStorage) that must never surface anywhere.
+  function writeState(name: string): string {
+    const file = join(tmp, name);
+    writeFileSync(file, JSON.stringify({
+      cookies: [{ name: "session", value: SENTINEL_COOKIE, domain: "127.0.0.1", path: "/", expires: -1, httpOnly: false, secure: false, sameSite: "Lax" }],
+      origins: [{ origin: site.ok, localStorage: [{ name: "token", value: SENTINEL_LOCAL }] }],
+    }));
+    return file;
+  }
+
+  it("authenticates the run, records only the file PATH, and leaks no value into any artifact", async () => {
+    const stateFile = writeState("state-leak.json");
+    ollama.script = [{ name: "done", args: { answer: "the member fact is 7788" } }];
+    const r = await runAgent({ ...opts(), task: "t", startUrl: `${site.ok}/gated`, storageState: stateFile, traceDir: tmp });
+    assert.equal(r.status, "done");
+    // Applied: the cookie-gated content reached the model...
+    assert.match(observations(r.runDir!)[0]!, /member fact 7788/, "the state file's cookie authenticated the session");
+    // ...the trace records the FACT of authentication (the path)...
+    const runJsonRaw = readFileSync(join(r.runDir!, "run.json"), "utf8");
+    assert.equal((JSON.parse(runJsonRaw) as { storageState?: string }).storageState, stateFile);
+    // ...and no artifact anywhere contains a state-file VALUE: not the trace, not
+    // run.json, not a single byte of what was sent to the model backend.
+    const artifacts: Array<[string, string]> = [
+      ["run.json", runJsonRaw],
+      ["trace.jsonl", readFileSync(join(r.runDir!, "trace.jsonl"), "utf8")],
+      ["model requests", ollama.requests.join("\n")],
+    ];
+    for (const [what, raw] of artifacts) {
+      assert.ok(!raw.includes(SENTINEL_COOKIE), `cookie value must not appear in ${what}`);
+      assert.ok(!raw.includes(SENTINEL_LOCAL), `localStorage value must not appear in ${what}`);
+    }
+  });
+
+  it("re-applies the recorded state file on resume (the resumed session is authenticated)", async () => {
+    const stateFile = writeState("state-resume.json");
+    ollama.script = [{ name: "done", args: { answer: "first" } }];
+    const first = await runAgent({ ...opts(), task: "t", startUrl: `${site.ok}/gated`, storageState: stateFile, traceDir: tmp });
+    ollama.script = [{ name: "done", args: { answer: "resumed" } }];
+    const r = await resumeRun(first.runDir!, { maxSteps: 2, keyframeInterval: 5, headless: true, traceDir: tmp });
+    assert.equal(r.status, "done");
+    assert.match(observations(r.runDir!)[0]!, /member fact 7788/, "resume re-applied the storage state");
+  });
+
+  it("refuses to resume when the recorded state file is gone (never silently unauthenticated)", async () => {
+    const stateFile = writeState("state-gone.json");
+    ollama.script = [{ name: "done", args: { answer: "first" } }];
+    const first = await runAgent({ ...opts(), task: "t", startUrl: `${site.ok}/gated`, storageState: stateFile, traceDir: tmp });
+    rmSync(stateFile);
+    await assert.rejects(
+      resumeRun(first.runDir!, { maxSteps: 2, keyframeInterval: 5, headless: true, traceDir: tmp }),
+      /storage state file .* is gone/,
+    );
   });
 });
 

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { chromium, type Browser, type BrowserContext, type Page, type Frame, type Locator } from "playwright";
 import type { Snapshot, ActionResult, ElementInfo } from "./types.js";
 
@@ -8,6 +9,13 @@ const EVAL_DEADLINE_MS = 10000;
 
 export interface BrowserOptions {
   headless: boolean;
+  /**
+   * Path to a Playwright storage-state JSON file (cookies + localStorage), applied
+   * when the context is created — an authenticated session from the first request.
+   * The file holds credentials by definition, so its VALUES are never kept, logged,
+   * or attached to an error here; callers that record anything record the path.
+   */
+  storageState?: string | undefined;
   /**
    * Child-frame admission check. A frame whose URL fails it is not enumerated
    * (a visible note marks the omission), its text never reaches the snapshot,
@@ -227,10 +235,35 @@ export class BrowserSession {
   private nextChildFrameId = 1;
 
   static async launch(opts: BrowserOptions): Promise<BrowserSession> {
+    // Validate the storage state up front: Playwright would eventually throw on a
+    // bad file, but the error should name the actual problem before any browser
+    // launches — and a WRONG file (say, a package.json) must fail loudly rather
+    // than silently yield an unauthenticated session. Parsed only for its shape;
+    // the contents are credentials and are deliberately not kept or echoed.
+    if (opts.storageState) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(readFileSync(opts.storageState, "utf8"));
+      } catch (e) {
+        throw new Error(`cannot load storage state file ${opts.storageState}: ${errMsg(e)}`);
+      }
+      const shape = parsed as { cookies?: unknown; origins?: unknown } | null;
+      if (
+        shape === null || typeof shape !== "object" || Array.isArray(shape) ||
+        (shape.cookies === undefined && shape.origins === undefined) ||
+        (shape.cookies !== undefined && !Array.isArray(shape.cookies)) ||
+        (shape.origins !== undefined && !Array.isArray(shape.origins))
+      ) {
+        throw new Error(`${opts.storageState} does not look like a Playwright storage state file (expected a JSON object with "cookies" / "origins" arrays)`);
+      }
+    }
     const s = new BrowserSession();
     s.frameAllowed = opts.frameAllowed;
     s.browser = await chromium.launch({ headless: opts.headless });
-    s.context = await s.browser.newContext({ viewport: { width: 1280, height: 800 } });
+    s.context = await s.browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      ...(opts.storageState ? { storageState: opts.storageState } : {}),
+    });
     // Runs in every document before page scripts, setting up three things: (1) a
     // no-op __name shim (tsx/esbuild injects __name() into page.evaluate callbacks,
     // which don't exist in the page; harmless after a `tsc` build, required under

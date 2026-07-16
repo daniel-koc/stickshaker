@@ -260,10 +260,23 @@ export class BrowserSession {
     const s = new BrowserSession();
     s.frameAllowed = opts.frameAllowed;
     s.browser = await chromium.launch({ headless: opts.headless });
-    s.context = await s.browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      ...(opts.storageState ? { storageState: opts.storageState } : {}),
-    });
+    try {
+      s.context = await s.browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        ...(opts.storageState ? { storageState: opts.storageState } : {}),
+      });
+    } catch (e) {
+      // newContext is the one setup call that consumes user-controlled input: a
+      // storage-state file that passed the shape check above but has a malformed
+      // entry (a cookie missing `value`, a truncated or version-mismatched export)
+      // is rejected HERE, after the browser is already up. Close it so a bad file
+      // can't leak a Chromium process — one zombie per failed launch, which
+      // accumulates in the long-lived MCP server.
+      await s.browser.close().catch(() => {});
+      throw opts.storageState
+        ? new Error(`failed to apply storage state from ${opts.storageState}: ${errMsg(e)}`)
+        : e;
+    }
     // Runs in every document before page scripts, setting up three things: (1) a
     // no-op __name shim (tsx/esbuild injects __name() into page.evaluate callbacks,
     // which don't exist in the page; harmless after a `tsc` build, required under

@@ -585,4 +585,18 @@ describe("storage state", () => {
       /does not look like a Playwright storage state file/,
     );
   });
+
+  it("closes the browser (no leak) and errors clearly when Playwright rejects a malformed-but-shape-valid file", async () => {
+    // Passes the shape check (cookies is an array) but the cookie lacks `value`, so
+    // Playwright rejects it in newContext — AFTER the browser has launched. The
+    // wrapped "failed to apply storage state" message only appears if the
+    // close-on-failure catch ran, so asserting it proves the browser was closed
+    // rather than leaked (a raw Playwright error would mean the leak path fired).
+    const file = join(dir, "malformed.json");
+    writeFileSync(file, JSON.stringify({ cookies: [{ name: "x" }], origins: [] }));
+    await assert.rejects(
+      BrowserSession.launch({ headless: true, storageState: file }),
+      /failed to apply storage state from .*malformed\.json/,
+    );
+  });
 });

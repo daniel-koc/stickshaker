@@ -235,8 +235,15 @@ program
   .option("--ollama-url <url>", "Ollama base URL for recall embeddings", "http://localhost:11434")
   .option("--embed-model <name>", "Ollama embedding model for recall", "nomic-embed-text")
   .action(async (opts: { policy?: string; storageState?: string; traceDir: string; ollamaUrl: string; embedModel: string }) => {
+    const policy = opts.policy ? loadPolicy(opts.policy) : undefined;
+    // The launch flag needs allowStorageState (buildServer enforces that). When it
+    // is granted but nothing confines the origin, the authenticated shared session
+    // can be steered anywhere a tool call decides — warn, matching `run`.
+    if (opts.storageState && policy?.allowStorageState === true && !(policy.domains?.allow?.length || policy.sameOriginOnly)) {
+      console.error("⚠ --storage-state without origin confinement: add a domains allowlist or sameOriginOnly to the policy, or the authenticated session can be steered anywhere a tool call decides.");
+    }
     await startStdioServer({
-      ...(opts.policy ? { policy: loadPolicy(opts.policy), policyPath: opts.policy } : {}),
+      ...(policy ? { policy, policyPath: opts.policy } : {}),
       ...(opts.storageState ? { storageState: opts.storageState } : {}),
       traceDir: opts.traceDir,
       ollamaUrl: opts.ollamaUrl,

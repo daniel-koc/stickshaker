@@ -209,17 +209,19 @@ export async function runEval(
   const server = await startFixtureServer();
   // A task that declares storage state gets it as a real file, exactly like the
   // CLI flag would: written once per eval run, passed by path, removed afterward.
+  // Written INSIDE the try so a write failure still runs the finally (closing the
+  // server, removing any temp dir), rather than leaking the just-opened server.
   let stateDir: string | undefined;
   const stateFiles = new Map<string, string>();
-  for (const t of tasks) {
-    if (!t.storageState) continue;
-    stateDir ??= mkdtempSync(join(tmpdir(), "stickshaker-eval-state-"));
-    const file = join(stateDir, `${t.id}.json`);
-    writeFileSync(file, JSON.stringify(t.storageState));
-    stateFiles.set(t.id, file);
-  }
   const results: TaskResult[] = [];
   try {
+    for (const t of tasks) {
+      if (!t.storageState) continue;
+      stateDir ??= mkdtempSync(join(tmpdir(), "stickshaker-eval-state-"));
+      const file = join(stateDir, `${t.id}.json`);
+      writeFileSync(file, JSON.stringify(t.storageState));
+      stateFiles.set(t.id, file);
+    }
     for (const t of tasks) {
       for (let trial = 0; trial < trials; trial++) {
         const label = trials > 1 ? `${t.id}#${trial + 1}` : t.id;
